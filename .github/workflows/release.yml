@@ -71,14 +71,25 @@ jobs:
           /tmp/smoke/bin/python -c "
           import kaos_pdf
           from kaos_pdf import (
-              BestOfN, Call, ChainOfThought, Judge, Program, ReAct,
-              Refine, Signature, classify, extract, summarize, text,
+              ClassifyPageTool, GetOutlineTool, GetPageTextTool,
+              KaosPdfError, ParsePDFTool, PDFMetadataTool,
+              PdfMetadata, PdfOutlineEntry, RenderPageTool,
+              SearchDocumentTool,
+              extract_pdf, get_pdf_metadata, get_pdf_outline,
+              register_pdf_tools, render_page, search_document,
           )
+          import dataclasses
           assert kaos_pdf.__version__, 'version missing from wheel'
-          # KLLC-07 hard caps from the 0.1.0a1 audit must ship.
-          assert ReAct.MAX_ITERATIONS == 1000
-          assert Refine.MAX_ITERATIONS == 100
-          assert BestOfN.MAX_N == 100
+          assert dataclasses.is_dataclass(PdfMetadata)
+          assert dataclasses.is_dataclass(PdfOutlineEntry)
+          assert len(kaos_pdf.__all__) >= 30
+          for tool_cls in (
+              ParsePDFTool, GetPageTextTool, RenderPageTool,
+              PDFMetadataTool, SearchDocumentTool, GetOutlineTool,
+              ClassifyPageTool,
+          ):
+              ann = tool_cls().metadata.annotations
+              assert ann.readOnlyHint and ann.idempotentHint
           print(f'kaos-pdf {kaos_pdf.__version__}: smoke OK')
           "
 

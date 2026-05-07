@@ -220,27 +220,50 @@ jobs:
           assert kaos_pdf.__version__, 'version missing from wheel'
           # Public API surface imports without error.
           from kaos_pdf import (
-              BestOfN,
-              Call,
-              ChainOfThought,
-              ExecutionTrace,
-              Judge,
-              JSONCodec,
-              Program,
-              ReAct,
-              Refine,
-              Signature,
-              classify,
-              extract,
-              summarize,
-              text,
+              ClassifyPageTool,
+              GetOutlineTool,
+              GetPageTextTool,
+              KaosPdfError,
+              OCREngine,
+              OCRMode,
+              ParsePDFTool,
+              PDFMetadataTool,
+              PdfMetadata,
+              PdfOutlineEntry,
+              RenderPageTool,
+              SearchDocumentTool,
+              TableEngine,
+              TableMode,
+              classify_document,
+              classify_page,
+              extract_page_text,
+              extract_pdf,
+              extract_pdf_bytes,
+              extract_pdf_with_tables,
+              get_page_count,
+              get_pdf_metadata,
+              get_pdf_outline,
+              register_pdf_tools,
+              render_page,
+              search_document,
           )
-          # The class-level iteration caps from the 0.1.0a1 audit fixes
-          # (KLLC-07) ship correctly.
-          assert ReAct.MAX_ITERATIONS == 1000
-          assert Refine.MAX_ITERATIONS == 100
-          assert BestOfN.MAX_N == 100
-          print(f'kaos-pdf {kaos_pdf.__version__}: public API OK')
+          assert len(kaos_pdf.__all__) >= 30
+          # Typed result models from PDF-003 carry through the wheel.
+          import dataclasses
+          assert dataclasses.is_dataclass(PdfMetadata)
+          assert dataclasses.is_dataclass(PdfOutlineEntry)
+          # All seven MCP tools are read-only / idempotent.
+          for tool_cls in (
+              ParsePDFTool, GetPageTextTool, RenderPageTool,
+              PDFMetadataTool, SearchDocumentTool, GetOutlineTool,
+              ClassifyPageTool,
+          ):
+              ann = tool_cls().metadata.annotations
+              assert ann.readOnlyHint is True
+              assert ann.idempotentHint is True
+              assert ann.destructiveHint is False
+              assert ann.openWorldHint is False
+          print(f'kaos-pdf {kaos_pdf.__version__}: public API OK ({len(kaos_pdf.__all__)} symbols)')
           "
           # Exercise the CLI entrypoint.
           /tmp/smoke/bin/kaos-pdf --help
