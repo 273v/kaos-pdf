@@ -1,0 +1,168 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kaos-pdf"
+dynamic = ["version"]
+description = "PDF extraction and document processing for KAOS — structured AST output with provenance"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+  { name = "273 Ventures LLC", email = "it@273ventures.com" },
+]
+maintainers = [
+  { name = "Michael Bommarito", email = "mike@273ventures.com" },
+]
+keywords = [
+  "pdf",
+  "extraction",
+  "pypdfium2",
+  "ocr",
+  "tables",
+  "kaos",
+  "mcp",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Office/Business",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Text Processing",
+  "Typing :: Typed",
+]
+dependencies = [
+  "kaos-content[images,layout,markdown]>=0.1.0a1,<0.2",
+  "kaos-core>=0.1.0a3,<0.2",
+  "pypdfium2>=4.30.0",
+]
+
+[project.scripts]
+kaos-pdf = "kaos_pdf.cli:main"
+kaos-pdf-serve = "kaos_pdf.serve:main"
+
+# NOTE: the [mcp] extra is intentionally not declared at 0.1.0a1
+# because `kaos-mcp` is not yet on PyPI. `uv lock` is strict and
+# refuses to resolve any declared extra whose package is unresolvable.
+# `[mcp]` (the MCP server bridge for kaos_pdf.tools) will return once
+# `kaos-mcp` ships on PyPI. Until then, install kaos-mcp from source
+# and import the kaos_pdf tools directly.
+# See docs/oss/checklists/per-package-release.md (F009 #4).
+[project.optional-dependencies]
+nlp = ["kaos-nlp-core>=0.1.0a2,<0.2"]
+# OCR for scanned PDFs. Ships Tesseract as the default engine.
+# Requires the system tesseract binary (apt/brew/etc.). PaddleOCR will
+# land under a separate [paddle] extra in a follow-up.
+ocr = ["pytesseract>=0.3.10"]
+# Structured table extraction. Default engine is pdfplumber
+# (MIT, pure Python, no Java/GPU).
+tables = ["pdfplumber>=0.11.0"]
+# Note: VLM page programs (describe / classify / VLM-OCR) live in
+# `kaos-llm-core[vision]` as of kaos-llm-core 0.1.0a3 — moved out of
+# kaos-pdf to keep the extraction → LLM dependency direction
+# one-directional (audit-01 PDF-001).
+
+[dependency-groups]
+dev = [
+  "kaos-nlp-core>=0.1.0a2,<0.2",
+  "pdfplumber>=0.11.0",
+  "pytesseract>=0.3.10",
+  "pytest>=9.0.3",
+  "pytest-asyncio>=1.3.0",
+  "pytest-cov>=7.1.0",
+  "ruff>=0.15.12",
+  "ty>=0.0.34,<0.1",
+]
+
+[project.urls]
+Homepage = "https://kelvin.legal"
+Documentation = "https://docs.kelvin.legal"
+Repository = "https://github.com/273v/kaos-pdf"
+Issues = "https://github.com/273v/kaos-pdf/issues"
+Changelog = "https://github.com/273v/kaos-pdf/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "kaos_pdf/_version.py"
+
+[tool.hatch.build.targets.sdist]
+# Sdist intentionally excludes /tests, /docs, and /CLAUDE.md.
+# Test fixtures total 122MB and are corpus-heavy; tests/integration
+# requires a runtime context; CLAUDE.md references monorepo-only docs.
+# Source code, license, changelog, and packaging metadata are enough
+# for source-build verification on PyPI.
+include = [
+  "/kaos_pdf",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/NOTICE",
+  "/pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["kaos_pdf"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+  "--cov=kaos_pdf",
+  "--cov-branch",
+  "--cov-report=term-missing",
+]
+markers = [
+  "integration: end-to-end behavior checks",
+  "unit: focused unit checks",
+]
+
+[tool.coverage.run]
+source = ["kaos_pdf"]
+branch = true
+omit = [
+  "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "@abstractmethod",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PTH"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kaos_pdf"]
+
+[tool.ty.src]
+include = ["kaos_pdf", "tests"]
+# Test files that import siblings stripped from the per-module repo's
+# 0.1.0a1 release because the underlying packages aren't on PyPI yet.
+# Runtime imports are gated behind pytest.importorskip but ty resolves
+# modules statically. Re-include once the [mcp] extra returns at
+# 0.1.0aN once kaos-mcp ships.
+exclude = [
+  "tests/integration/test_mcp_pdf_pipeline.py",
+]
+
+[tool.uv]
+package = true
