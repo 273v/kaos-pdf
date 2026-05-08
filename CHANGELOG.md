@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a2] — 2026-05-08
+
+CI supply-chain hardening (audit-02 F7) and documentation accuracy
+(audit-02 F8). No source code or public API changes.
+
+### Security
+
+- **F7: CI supply-chain hardening.** `.github/workflows/security.yml`
+  pins the gitleaks Docker image to `v8.21.2` (no longer tracking
+  `:latest`), adds a Bandit static-analysis job (medium severity /
+  medium confidence, AST-level — `B101,B404,B603,B607` skipped because
+  pytest assertions, subprocess use, and known-safe partial-path
+  invocations are intentional), and runs the integration suite on
+  `schedule` and `workflow_dispatch` so cross-package regressions
+  surface against `main` even though the unit gate stays the PR fast
+  path. SHA-pinning of GitHub Actions themselves remains a follow-up;
+  the existing `.github/dependabot.yml` `github-actions` ecosystem PRs
+  continue to keep tag-pinned actions current.
+
+### Changed
+
+- **F8: `SECURITY.md` rewritten to match the actual surface.** The
+  previous file was the cross-package template — it referenced
+  `ProgramOfThought`, `batch_run`, the semantic cache, and Program v3
+  envelope JSON, all of which live in `kaos-llm-core` / `kaos-agents`,
+  not `kaos-pdf`. The new file documents the real boundaries: PDF
+  input handling (malformed / encrypted / oversize / metadata),
+  Tool-layer validation, the global PDFium lock, OCR / table-extraction
+  subprocess wrappers, and the OIDC release pipeline. Out-of-scope
+  items now correctly list third-party dependencies (`pypdfium2`,
+  `pillow`, `pytesseract`, `camelot-py`, `tabula-py`) and the bundled
+  PDFium binary.
+
 ## [0.1.0a1] — 2026-05-07
 
 First public alpha. Apache-2.0. Earlier internal versions were proprietary.
