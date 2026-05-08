@@ -42,28 +42,43 @@ minor releases will be supported.
 
 ## Scope
 
+`kaos-pdf` extracts text, layout, tables, metadata, outline, and
+rendered page images from PDF documents using ``pypdfium2`` (Apache-2.0
+PDFium bindings). Optional OCR via Tesseract; optional table extraction
+via Camelot or Tabula. Output is a ``kaos-content`` ``ContentDocument``
+AST plus typed metadata models. Tools are exposed via ``register_pdf_tools(runtime)``
+and consumed by ``kaos-mcp`` over MCP.
+
 In-scope:
 
 - The `kaos-pdf` Python package as published on PyPI
 - The `273v/kaos-pdf` GitHub repository (CI, release, supply chain)
-- Signature input validation and codec encode/decode boundaries
-- Program execution: ReAct, Refine, BestOfN, ChainOfThought, RAG, Grounded,
-  ProgramOfThought (the subprocess sandbox + `allow_code_execution=True`
-  opt-in gate)
-- Program v3 envelope JSON parsing and execution
-- Batch runner (`batch_run` library + MCP tools): JSONL log integrity,
-  workspace SQLite (WAL, multi-process safety), cost-cap enforcement
-- Semantic cache disk persistence (replay-on-init invariants)
-- MCP server (`kaos-pdf-serve`) — request validation, tool annotations,
-  response size caps
+- PDF input handling — malformed / encrypted / oversize files, deeply
+  nested page trees, malicious metadata, font-rendering paths inherited
+  from PDFium
+- Tool boundary (`ParsePDFTool`, `GetPageTextTool`, `RenderPageTool`,
+  `PDFMetadataTool`, `SearchDocumentTool`, `GetOutlineTool`,
+  `ClassifyPageTool`) — input validation, response shaping, tool
+  annotation correctness (`readOnlyHint`, `idempotentHint`)
+- Thread-safety of the global PDFium lock (see `docs/THREAD_SAFETY.md`);
+  multi-thread / multi-process callers must not corrupt PDFium state
+- OCR engine wrapper (`TesseractEngine`) — subprocess invocation,
+  argument quoting, image input handling
+- Table extraction engine wrappers (Camelot / Tabula) — same surface
+- OIDC trusted-publishing release pipeline
 
 Out of scope:
 
-- Third-party dependencies (report to the upstream project — `pydantic`,
-  `kaos-core`, `kaos-content`, `kaos-llm-client`, `kaos-nlp-core`)
-- Provider-side issues at OpenAI / Anthropic / Google / xAI / Groq /
-  Mistral / OpenRouter (report to the upstream provider — these are
-  surfaced through `kaos-llm-client`'s transport)
+- Vulnerabilities in third-party dependencies — report upstream
+  (`pypdfium2`, `pillow`, `pytesseract`, `camelot-py`, `tabula-py`,
+  `pydantic`, `kaos-core`, `kaos-content`).
+- The bundled PDFium binary itself — Foxit / Google issue, report to
+  the PDFium project.
+- Tesseract, Camelot, or Tabula crashes on adversarial input — report
+  to the upstream tool; we wrap them but cannot fix their parsers.
+- MCP transport security — that surface lives in `kaos-mcp`; report
+  there.
 - Issues caused by user-supplied configuration that explicitly disables
-  safety features (e.g., constructing `ProgramOfThought(allow_code_execution=True)`
-  and then passing untrusted input)
+  safety features (e.g. raising `max_resource_bytes` past the published
+  defaults, or running OCR on attacker-controlled images without an
+  allowlist).
