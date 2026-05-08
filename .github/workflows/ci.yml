@@ -29,6 +29,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          cache-suffix: lint-py3.13
 
       - name: Install Python 3.13
         run: uv python install 3.13
@@ -61,6 +62,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          cache-suffix: pre-commit-py3.13
 
       - name: Install Python 3.13
         run: uv python install 3.13
@@ -109,6 +111,14 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          # One cache per matrix leg. Without this, all 5 jobs race
+          # on the same cache key and only the first to finish wins —
+          # the others throw away their compiled wheels (Pillow,
+          # pydantic-core, numpy on 3.14t / 3.15) and recompile from
+          # source on every run. The annotation
+          # "Failed to save: Unable to reserve cache with key …"
+          # in the prior CI logs is exactly this race.
+          cache-suffix: test-py${{ matrix.python-version }}
 
       - name: Install Python ${{ matrix.python-version }}
         # `--preview` lets `uv python install` resolve in-development
@@ -169,6 +179,14 @@ jobs:
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          # min-deps resolves with --resolution=lowest-direct, which
+          # downloads materially different wheel versions than the
+          # other 3.13 jobs. Separate cache so the two don't fight
+          # over the same key.
+          cache-suffix: min-deps-py3.13
 
       - name: Install Python 3.13
         run: uv python install 3.13
@@ -196,6 +214,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
+          cache-suffix: build-py3.13
 
       - name: Install Python 3.13
         run: uv python install 3.13
