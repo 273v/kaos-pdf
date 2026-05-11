@@ -150,3 +150,29 @@ jobs:
 
       - name: Run integration tests
         run: uv run pytest tests/integration/ -q --no-cov
+
+  # ────────────── vulture (dead-code detection) ──────────────
+  # Reports names vulture is 100% confident are unreachable. The
+  # `--ignore-names` list carves out names vulture can't infer from
+  # the import graph (framework callbacks, signal handlers, OAuth /
+  # OIDC field names accessed by string, MCP `_meta` keys, etc.).
+  # Mirrors the pre-commit hook.
+  vulture:
+    name: vulture (dead-code scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Run vulture
+        run: |
+          uvx --python 3.13 vulture \
+            kaos_pdf \
+            --min-confidence 100 \
+            --ignore-names client_id,scopes,authorization_endpoint,token_endpoint,device_authorization_endpoint,url,open_ch,container_tag,message_id,parent_message_id,kwargs,context_id,frame,signum,exc_type,tb
