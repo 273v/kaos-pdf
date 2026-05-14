@@ -146,7 +146,7 @@ def _cmd_extract(args: argparse.Namespace) -> None:
     """Extract PDF content in the specified format."""
     from kaos_content import serialize_html, serialize_markdown, serialize_text
 
-    from kaos_pdf import extract_pdf, extract_pdf_bytes
+    from kaos_pdf import parse_pdf, parse_pdf_bytes
 
     pages = _parse_pages(args.pages) if args.pages else None
     extract_kwargs: dict[str, Any] = {}
@@ -159,12 +159,12 @@ def _cmd_extract(args: argparse.Namespace) -> None:
         data = sys.stdin.buffer.read()
         if not data:
             _error("No data received on stdin")
-        doc = extract_pdf_bytes(data, pages=pages, **extract_kwargs)
+        doc = parse_pdf_bytes(data, pages=pages, **extract_kwargs)
     else:
         if args.file is None:
             _error("FILE is required unless --stdin is used")
         path = _validate_file(args.file)
-        doc = extract_pdf(path, pages=pages, **extract_kwargs)
+        doc = parse_pdf(path, pages=pages, **extract_kwargs)
 
     serializers = {
         "markdown": serialize_markdown,
@@ -178,10 +178,10 @@ def _cmd_extract(args: argparse.Namespace) -> None:
 
 def _cmd_search(args: argparse.Namespace) -> None:
     """Search within a PDF by query."""
-    from kaos_pdf import extract_pdf, search_document
+    from kaos_pdf import parse_pdf, search_document
 
     path = _validate_file(args.file)
-    doc = extract_pdf(path)
+    doc = parse_pdf(path)
     search_results = search_document(doc, args.query, top_k=args.top_k, level=args.level)
 
     if args.json:
@@ -262,7 +262,7 @@ def _cmd_info(args: argparse.Namespace) -> None:
 
 def _cmd_outline(args: argparse.Namespace) -> None:
     """Show PDF outline (bookmarks or detected headings)."""
-    from kaos_pdf import PdfOutlineEntry, extract_pdf, get_pdf_outline
+    from kaos_pdf import PdfOutlineEntry, get_pdf_outline, parse_pdf
 
     path = _validate_file(args.file)
 
@@ -274,7 +274,7 @@ def _cmd_outline(args: argparse.Namespace) -> None:
         # Fallback: extract headings
         from kaos_content import NodeIndex, extract_text
 
-        doc = extract_pdf(path)
+        doc = parse_pdf(path)
         idx = NodeIndex(doc)
         source = "headings"
         outline = [

@@ -22,10 +22,10 @@ from kaos_pdf.extract import (
     classify_document,
     classify_page,
     extract_page_text,
-    extract_pdf,
     get_page_count,
     get_pdf_metadata,
     get_pdf_outline,
+    parse_pdf,
     render_page,
 )
 
@@ -125,7 +125,7 @@ class ParsePDFTool(KaosTool):
         loop = asyncio.get_running_loop()
         try:
             doc = await loop.run_in_executor(
-                _PDF_EXECUTOR, lambda: extract_pdf(path, pages=inputs.get("pages"))
+                _PDF_EXECUTOR, lambda: parse_pdf(path, pages=inputs.get("pages"))
             )
         except Exception as exc:
             return ToolResult.create_error(

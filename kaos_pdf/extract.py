@@ -269,6 +269,14 @@ def extract_pdf_bytes(
             doc.close()
 
 
+# Canonical aliases per docs/guides/python-api-naming.md.
+# ``parse_pdf`` / ``parse_pdf_bytes`` are the names callers should reach for —
+# ``extract_pdf`` / ``extract_pdf_bytes`` are kept as deprecation wrappers in
+# ``kaos_pdf/__init__.py``. Both call into the same underlying implementation.
+parse_pdf = extract_pdf
+parse_pdf_bytes = extract_pdf_bytes
+
+
 def get_page_count(source: str | Path) -> int:
     """Return the number of pages in a PDF."""
     with _PDFIUM_LOCK:
