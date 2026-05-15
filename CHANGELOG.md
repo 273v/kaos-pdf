@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a4] — 2026-05-15
+
+### Added — tool-group registration entry points (PRD PR 1)
+
+- **`register_pdf_documents_tools(runtime)`** — registers the 7
+  read-only PDF tools (parsers, extractors, renderers, metadata
+  inspectors, outline + classification). This is the entry point a
+  consumer of the SessionToolSet `documents` group should call.
+- **`register_pdf_authoring_tools(runtime)`** — public surface for
+  future `kaos-pdf-write-*` writers, mutators, redactors. Currently
+  registers 0 tools; the stable function exists so the
+  SessionToolSet `authoring` group has a registration entry point
+  before writers ship.
+- **`register_pdf_tools(runtime)`** is now a backward-compatible
+  union of the two — callers that previously got 7 tools continue
+  to get 7. The wrapper composes the new entry points so a future
+  authoring writer registered into one half flows automatically
+  into the union.
+
+The split is motivated by
+`kaos-modules/docs/internal/dynamic-tool-planning-prd.md` §4
+("PR 1 — catalog expansion"). It is purely additive: no existing
+function signature, tool name, schema, or behavior changes.
+
 ## [0.1.0a3] — 2026-05-15
 
 ### Fixed

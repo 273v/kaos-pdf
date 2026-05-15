@@ -583,8 +583,16 @@ class ClassifyPageTool(KaosTool):
             )
 
 
-def register_pdf_tools(runtime: KaosRuntime) -> int:
-    """Register all PDF tools with the runtime. Returns count."""
+def register_pdf_documents_tools(runtime: KaosRuntime) -> int:
+    """Register the read-only PDF document tools.
+
+    These are the parsers, extractors, renderers, and metadata
+    inspectors — every tool that takes a PDF and returns text,
+    structure, or a derived view *without* mutating or producing a
+    new PDF artifact. Callers that want only the "documents" group
+    of a SessionToolSet ceiling should register this and skip
+    :func:`register_pdf_authoring_tools`.
+    """
     tools: list[KaosTool] = [
         ParsePDFTool(),
         GetPageTextTool(),
@@ -597,3 +605,29 @@ def register_pdf_tools(runtime: KaosRuntime) -> int:
     for tool in tools:
         runtime.tools.register_tool(tool)
     return len(tools)
+
+
+def register_pdf_authoring_tools(runtime: KaosRuntime) -> int:
+    """Register the PDF authoring tools (writers, mutators, redactors).
+
+    Reserved for future ``kaos-pdf-write-*`` style tools that *create*
+    or *mutate* PDFs (merge, split, watermark, redact, sign). Currently
+    empty — this function is part of the public surface so that the
+    SessionToolSet ``authoring`` group has a stable registration entry
+    point even before any writers ship. Returns ``0`` until then.
+    """
+    del runtime
+    return 0
+
+
+def register_pdf_tools(runtime: KaosRuntime) -> int:
+    """Register all PDF tools with the runtime. Returns count.
+
+    Backward-compatible union of :func:`register_pdf_documents_tools`
+    and :func:`register_pdf_authoring_tools` — the entry point
+    ``kaos-mcp serve --module pdf`` calls. Existing callers continue
+    to see the same tool inventory.
+    """
+    count = register_pdf_documents_tools(runtime)
+    count += register_pdf_authoring_tools(runtime)
+    return count
