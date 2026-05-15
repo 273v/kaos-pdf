@@ -16,6 +16,8 @@ from kaos_pdf.tools import (
     PDFMetadataTool,
     RenderPageTool,
     SearchDocumentTool,
+    register_pdf_authoring_tools,
+    register_pdf_documents_tools,
     register_pdf_tools,
 )
 
@@ -355,5 +357,36 @@ class TestRegisterTools:
         assert "kaos-pdf-extract-page-text" in tool_names
         assert "kaos-pdf-render-page" in tool_names
         assert "kaos-pdf-metadata" in tool_names
+        assert "kaos-pdf-search-document" in tool_names
         assert "kaos-pdf-get-outline" in tool_names
         assert "kaos-pdf-classify-page" in tool_names
+
+    def test_register_documents_subset(self, runtime: KaosRuntime) -> None:
+        """The documents group registers every read-only PDF tool.
+
+        Pins the SessionToolSet ``documents`` group entry point: a
+        caller that wants only document reads (no future writers) gets
+        the same 7 tools today. When ``register_pdf_authoring_tools``
+        starts shipping writers, those land in the ``authoring`` group
+        and stay out of this list.
+        """
+        count = register_pdf_documents_tools(runtime)
+        assert count == 7
+        # Every documents tool is read-only by ToolAnnotations.
+        for tool in runtime.tools.list_tool_objects():
+            annotations = tool.metadata.annotations
+            assert annotations is not None, f"{tool.metadata.name} missing annotations"
+            assert annotations.readOnlyHint is True, (
+                f"{tool.metadata.name} is registered as a documents tool but is not read-only"
+            )
+
+    def test_register_authoring_empty_today(self, runtime: KaosRuntime) -> None:
+        """The authoring group has no writers yet; entry point must still exist.
+
+        Registering ``register_pdf_authoring_tools`` must be a no-op
+        that returns 0 — the SessionToolSet ``authoring`` group has a
+        stable surface from PR 1 onward even before writers ship.
+        """
+        count = register_pdf_authoring_tools(runtime)
+        assert count == 0
+        assert runtime.tools.list_tool_objects() == []

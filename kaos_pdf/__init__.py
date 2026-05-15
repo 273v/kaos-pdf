@@ -59,6 +59,8 @@ from kaos_pdf.tools import (
     PDFMetadataTool,
     RenderPageTool,
     SearchDocumentTool,
+    register_pdf_authoring_tools,
+    register_pdf_documents_tools,
     register_pdf_tools,
 )
 
@@ -136,6 +138,8 @@ __all__ = [
     "get_pdf_outline",
     "parse_pdf",
     "parse_pdf_bytes",
+    "register_pdf_authoring_tools",
+    "register_pdf_documents_tools",
     "register_pdf_tools",
     "render_page",
     "search_document",
