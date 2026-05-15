@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`kaos-pdf-extract-parse`'s `pages` parameter now declares its
+  element type.** Previously the schema was `type=array` with no
+  `items` declaration, which OpenAI's strict JSON Schema validator
+  rejected with HTTP 400 `invalid_function_parameters`. The entire
+  tool catalog for the turn was lost, leaving the agent to
+  hallucinate answers. Now `items: {type: "integer", minimum: 0}` so
+  the LLM gets a precise contract (0-based page indices, no
+  negative values). kaos-core 0.1.0a7's defensive `items: {}` floor
+  is also in play as belt + suspenders.
+
 ### Security
 
 - **vulture (dead-code scan) now runs in pre-commit + CI alongside
