@@ -108,6 +108,7 @@ class ParsePDFTool(KaosTool):
                     type="array",
                     description="Optional 0-based page indices to extract.",
                     required=False,
+                    constraints={"items": {"type": "integer", "minimum": 0}},
                 ),
             ],
         )
