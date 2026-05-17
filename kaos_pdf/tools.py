@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 from kaos_content.artifacts import document_outline, document_to_summary, store_document
 from kaos_core import KaosContext, KaosRuntime, KaosTool, ToolMetadata, ToolResult
+from kaos_core.path_resolver import InputPathResolutionError, ResolvedOrigin
 from kaos_core.types.annotations import ToolAnnotations
 from kaos_core.types.enums import ToolCapability, ToolCategory
 from kaos_core.types.parameters import ParameterSchema
 
+from kaos_pdf._path_resolver import resolve_pdf_input
 from kaos_pdf.extract import (
     classify_document,
     classify_page,
@@ -82,6 +83,21 @@ _HINT_SEARCH_FAILED = (
     "'kaos-pdf-extract-parse' call in the same session."
 )
 
+# Shared parameter-description string for the ``path`` input on every
+# file-input tool. Advertises the three accepted shapes — absolute disk
+# path, kaos:// artifact URI, session-VFS relative path — so an LLM
+# inspecting the schema discovers it can hand back the same artifact_id
+# / VFS path it received from a host UI without re-uploading the file.
+# Routed through kaos_core.path_resolver in each tool's execute().
+_PATH_PARAM_DESCRIPTION = (
+    "PDF source. Accepts: (1) an absolute filesystem path, "
+    "(2) a 'kaos://artifacts/<id>' URI returned by a previous "
+    "extract/materialise tool in this session, or (3) a relative path "
+    "that lives in the session VFS (e.g. files uploaded through the "
+    "host UI). Bare filenames resolve against the session VFS, not the "
+    "process CWD."
+)
+
 
 class ParsePDFTool(KaosTool):
     """Parse a PDF file into a structured ContentDocument."""
@@ -102,7 +118,11 @@ class ParsePDFTool(KaosTool):
             version=_VERSION,
             annotations=_PDF_ANNOTATIONS,
             input_schema=[
-                ParameterSchema(name="path", type="string", description="Path to the PDF file."),
+                ParameterSchema(
+                    name="path",
+                    type="string",
+                    description=_PATH_PARAM_DESCRIPTION,
+                ),
                 ParameterSchema(
                     name="pages",
                     type="array",
@@ -116,65 +136,85 @@ class ParsePDFTool(KaosTool):
     async def execute(
         self, inputs: dict[str, Any], context: KaosContext | None = None
     ) -> ToolResult:
-        path = inputs["path"]
-        if not Path(path).exists():
-            return ToolResult.create_error(
-                f"File not found: {path}. "
-                "Verify the file path is correct and the file exists. " + _HINT_FILE_NOT_FOUND
-            )
-
-        loop = asyncio.get_running_loop()
+        requested = inputs.get("path", "")
         try:
-            doc = await loop.run_in_executor(
-                _PDF_EXECUTOR, lambda: parse_pdf(path, pages=inputs.get("pages"))
-            )
-        except Exception as exc:
-            return ToolResult.create_error(
-                f"PDF extraction failed for '{Path(path).name}': {exc}. "
-                "The file may be corrupted, password-protected, or not a valid PDF. "
-                + _HINT_CORRUPTED_PDF
-            )
+            async with resolve_pdf_input(requested, context) as resolved:
+                path = resolved.path
+                loop = asyncio.get_running_loop()
+                try:
+                    doc = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: parse_pdf(path, pages=inputs.get("pages"))
+                    )
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"PDF extraction failed for '{path.name}': {exc}. "
+                        "The file may be corrupted, password-protected, or not a valid PDF. "
+                        + _HINT_CORRUPTED_PDF
+                    )
 
-        if context is None or context.runtime is None:
-            return ToolResult.create_error(
-                "No runtime context available. "
-                "ParsePDF requires a KaosRuntime with artifact storage. "
-                "Use 'kaos-pdf-extract-page-text' for context-free text extraction."
-            )
+                if context is None or context.runtime is None:
+                    return ToolResult.create_error(
+                        "No runtime context available. "
+                        "ParsePDF requires a KaosRuntime with artifact storage. "
+                        "Use 'kaos-pdf-extract-page-text' for context-free text extraction."
+                    )
 
-        page_count = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
-        manifest = await store_document(
-            doc,
-            context.runtime,
-            context,
-            name=Path(path).stem,
-            description=f"Extracted from {Path(path).name}",
-            metadata={"source_path": str(path), "page_count": page_count},
-        )
+                page_count = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
+                # Carry the source artifact id (if the input was already
+                # an artifact) into the parsed-document manifest's
+                # metadata so downstream tools can trace the parsed
+                # ContentDocument back to its source PDF artifact
+                # without re-uploading or re-uploading the same bytes.
+                doc_metadata: dict[str, Any] = {
+                    "source_path": str(path),
+                    "page_count": page_count,
+                }
+                if resolved.origin == ResolvedOrigin.ARTIFACT and resolved.artifact_id:
+                    doc_metadata["source_artifact_id"] = resolved.artifact_id
+                    if resolved.body_uri:
+                        doc_metadata["source_body_uri"] = resolved.body_uri
 
-        summary = document_to_summary(doc, max_length=500)
-        outline = document_outline(doc)
+                manifest = await store_document(
+                    doc,
+                    context.runtime,
+                    context,
+                    name=path.stem,
+                    description=f"Extracted from {path.name}",
+                    metadata=doc_metadata,
+                )
 
-        from kaos_content.views import DocumentView
+                summary = document_to_summary(doc, max_length=500)
+                outline = document_outline(doc)
 
-        view = DocumentView(doc)
+                from kaos_content.views import DocumentView
 
-        return manifest.to_tool_result(
-            summary=summary,
-            structured_content={
-                "artifact_id": manifest.artifact_id,
-                "title": doc.metadata.title,
-                "page_count": doc.metadata.extra.get("page_count", 0),
-                "block_count": len(doc.body),
-                "has_pages": view.has_pages,
-                "has_sections": view.has_sections,
-                "outline": outline[:10],
-                "section_count": len(view.flat_sections),
-                "body_uri": manifest.body_uri,
-                "pages_uri": f"kaos://content/{manifest.artifact_id}/pages",
-                "sections_uri": f"kaos://content/{manifest.artifact_id}/sections",
-            },
-        )
+                view = DocumentView(doc)
+
+                structured: dict[str, Any] = {
+                    "artifact_id": manifest.artifact_id,
+                    "title": doc.metadata.title,
+                    "page_count": doc.metadata.extra.get("page_count", 0),
+                    "block_count": len(doc.body),
+                    "has_pages": view.has_pages,
+                    "has_sections": view.has_sections,
+                    "outline": outline[:10],
+                    "section_count": len(view.flat_sections),
+                    "body_uri": manifest.body_uri,
+                    "pages_uri": f"kaos://content/{manifest.artifact_id}/pages",
+                    "sections_uri": f"kaos://content/{manifest.artifact_id}/sections",
+                }
+                # When the input was an artifact, echo its id so the
+                # caller can keep the chain intact without re-resolving
+                # the original URI from chat scrollback.
+                if resolved.origin == ResolvedOrigin.ARTIFACT and resolved.artifact_id:
+                    structured["source_artifact_id"] = resolved.artifact_id
+
+                return manifest.to_tool_result(
+                    summary=summary,
+                    structured_content=structured,
+                )
+        except InputPathResolutionError as exc:
+            return ToolResult.create_error(exc.to_agent_message())
 
 
 class GetPageTextTool(KaosTool):
@@ -192,7 +232,11 @@ class GetPageTextTool(KaosTool):
             version=_VERSION,
             annotations=_PDF_ANNOTATIONS,
             input_schema=[
-                ParameterSchema(name="path", type="string", description="Path to the PDF file."),
+                ParameterSchema(
+                    name="path",
+                    type="string",
+                    description=_PATH_PARAM_DESCRIPTION,
+                ),
                 ParameterSchema(name="page", type="integer", description="0-based page index."),
             ],
         )
@@ -200,31 +244,31 @@ class GetPageTextTool(KaosTool):
     async def execute(
         self, inputs: dict[str, Any], context: KaosContext | None = None
     ) -> ToolResult:
-        path = inputs["path"]
-        if not Path(path).exists():
-            return ToolResult.create_error(
-                f"File not found: {path}. "
-                "Verify the file path is correct and the file exists. " + _HINT_FILE_NOT_FOUND
-            )
-        loop = asyncio.get_running_loop()
+        requested = inputs.get("path", "")
         try:
-            page_idx = inputs["page"]
-            text = await loop.run_in_executor(
-                _PDF_EXECUTOR, lambda: extract_page_text(path, page_idx)
-            )
-            return ToolResult.create_text(text)
-        except IndexError:
-            total = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
-            return ToolResult.create_error(
-                f"Page {inputs['page']} is out of range. "
-                f"This document has {total} pages (valid indices: 0 to {total - 1}). "
-                + _HINT_PAGE_OUT_OF_RANGE
-            )
-        except Exception as exc:
-            return ToolResult.create_error(
-                f"Text extraction failed for '{Path(path).name}': {exc}. "
-                "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
-            )
+            async with resolve_pdf_input(requested, context) as resolved:
+                path = resolved.path
+                loop = asyncio.get_running_loop()
+                try:
+                    page_idx = inputs["page"]
+                    text = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: extract_page_text(path, page_idx)
+                    )
+                    return ToolResult.create_text(text)
+                except IndexError:
+                    total = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
+                    return ToolResult.create_error(
+                        f"Page {inputs['page']} is out of range. "
+                        f"This document has {total} pages (valid indices: 0 to {total - 1}). "
+                        + _HINT_PAGE_OUT_OF_RANGE
+                    )
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"Text extraction failed for '{path.name}': {exc}. "
+                        "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
+                    )
+        except InputPathResolutionError as exc:
+            return ToolResult.create_error(exc.to_agent_message())
 
 
 class RenderPageTool(KaosTool):
@@ -242,7 +286,11 @@ class RenderPageTool(KaosTool):
             version=_VERSION,
             annotations=_PDF_ANNOTATIONS,
             input_schema=[
-                ParameterSchema(name="path", type="string", description="Path to the PDF file."),
+                ParameterSchema(
+                    name="path",
+                    type="string",
+                    description=_PATH_PARAM_DESCRIPTION,
+                ),
                 ParameterSchema(name="page", type="integer", description="0-based page index."),
                 ParameterSchema(
                     name="dpi",
@@ -257,60 +305,69 @@ class RenderPageTool(KaosTool):
     async def execute(
         self, inputs: dict[str, Any], context: KaosContext | None = None
     ) -> ToolResult:
-        path = inputs["path"]
-        if not Path(path).exists():
-            return ToolResult.create_error(
-                f"File not found: {path}. "
-                "Verify the file path is correct and the file exists. " + _HINT_FILE_NOT_FOUND
-            )
-
-        if context is None or context.runtime is None:
-            return ToolResult.create_error(
-                "No runtime context available. "
-                "RenderPage requires artifact storage to return the rendered image. "
-                + _HINT_NO_RUNTIME
-            )
-
-        loop = asyncio.get_running_loop()
+        requested = inputs.get("path", "")
         try:
-            dpi = inputs.get("dpi", 300)
-            page_idx = inputs["page"]
-            img = await loop.run_in_executor(
-                _PDF_EXECUTOR, lambda: render_page(path, page_idx, dpi=dpi)
-            )
-        except IndexError:
-            total = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
-            return ToolResult.create_error(
-                f"Page {inputs['page']} is out of range. "
-                f"This document has {total} pages (valid indices: 0 to {total - 1}). "
-                + _HINT_PAGE_OUT_OF_RANGE
-            )
-        except Exception as exc:
-            return ToolResult.create_error(
-                f"Page render failed for '{Path(path).name}': {exc}. "
-                "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
-            )
+            async with resolve_pdf_input(requested, context) as resolved:
+                # Resolve the path first so a missing-file error is reported
+                # ahead of the missing-runtime error — keeps the error
+                # message the agent sees aligned with what it actually got
+                # wrong, and matches the ordering of the other 5 tools.
+                if context is None or context.runtime is None:
+                    return ToolResult.create_error(
+                        "No runtime context available. "
+                        "RenderPage requires artifact storage to return the rendered image. "
+                        + _HINT_NO_RUNTIME
+                    )
 
-        from kaos_content.images.artifacts import store_image
+                path = resolved.path
+                loop = asyncio.get_running_loop()
+                try:
+                    dpi = inputs.get("dpi", 300)
+                    page_idx = inputs["page"]
+                    img = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: render_page(path, page_idx, dpi=dpi)
+                    )
+                except IndexError:
+                    total = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
+                    return ToolResult.create_error(
+                        f"Page {inputs['page']} is out of range. "
+                        f"This document has {total} pages (valid indices: 0 to {total - 1}). "
+                        + _HINT_PAGE_OUT_OF_RANGE
+                    )
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"Page render failed for '{path.name}': {exc}. "
+                        "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
+                    )
 
-        manifest = await store_image(
-            img,
-            context.runtime,
-            context,
-            name=f"{Path(path).stem}_page_{inputs['page']}",
-            description=f"Page {inputs['page']} of {Path(path).name} at {dpi} DPI",
-        )
+                from kaos_content.images.artifacts import store_image
 
-        return manifest.to_tool_result(
-            summary=f"Rendered page {inputs['page']} at {dpi} DPI ({img.width}x{img.height})",
-            structured_content={
-                "artifact_id": manifest.artifact_id,
-                "width": img.width,
-                "height": img.height,
-                "dpi": dpi,
-                "body_uri": manifest.body_uri,
-            },
-        )
+                # Renders always become a NEW image artifact — the rendered
+                # PNG is a different file from the source PDF, regardless
+                # of whether the source was a disk path, a VFS file, or an
+                # existing artifact.
+                manifest = await store_image(
+                    img,
+                    context.runtime,
+                    context,
+                    name=f"{path.stem}_page_{inputs['page']}",
+                    description=f"Page {inputs['page']} of {path.name} at {dpi} DPI",
+                )
+
+                return manifest.to_tool_result(
+                    summary=(
+                        f"Rendered page {inputs['page']} at {dpi} DPI ({img.width}x{img.height})"
+                    ),
+                    structured_content={
+                        "artifact_id": manifest.artifact_id,
+                        "width": img.width,
+                        "height": img.height,
+                        "dpi": dpi,
+                        "body_uri": manifest.body_uri,
+                    },
+                )
+        except InputPathResolutionError as exc:
+            return ToolResult.create_error(exc.to_agent_message())
 
 
 class PDFMetadataTool(KaosTool):
@@ -328,33 +385,39 @@ class PDFMetadataTool(KaosTool):
             version=_VERSION,
             annotations=_PDF_ANNOTATIONS,
             input_schema=[
-                ParameterSchema(name="path", type="string", description="Path to the PDF file."),
+                ParameterSchema(
+                    name="path",
+                    type="string",
+                    description=_PATH_PARAM_DESCRIPTION,
+                ),
             ],
         )
 
     async def execute(
         self, inputs: dict[str, Any], context: KaosContext | None = None
     ) -> ToolResult:
-        path = inputs["path"]
-        if not Path(path).exists():
-            return ToolResult.create_error(
-                f"File not found: {path}. "
-                "Verify the file path is correct and the file exists. " + _HINT_FILE_NOT_FOUND
-            )
-        loop = asyncio.get_running_loop()
+        requested = inputs.get("path", "")
         try:
-            meta = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_pdf_metadata(path))
-            doc_type = await loop.run_in_executor(_PDF_EXECUTOR, lambda: classify_document(path))
-            output: dict[str, Any] = meta.to_dict()
-            output["document_type"] = doc_type
-            title = meta.title or Path(path).name
-            summary = f"{title} — {meta.page_count} pages, type: {doc_type}"
-            return ToolResult.create_success(output=output, summary=summary)
-        except Exception as exc:
-            return ToolResult.create_error(
-                f"Failed to read metadata from '{Path(path).name}': {exc}. "
-                "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
-            )
+            async with resolve_pdf_input(requested, context) as resolved:
+                path = resolved.path
+                loop = asyncio.get_running_loop()
+                try:
+                    meta = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_pdf_metadata(path))
+                    doc_type = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: classify_document(path)
+                    )
+                    output: dict[str, Any] = meta.to_dict()
+                    output["document_type"] = doc_type
+                    title = meta.title or path.name
+                    summary = f"{title} — {meta.page_count} pages, type: {doc_type}"
+                    return ToolResult.create_success(output=output, summary=summary)
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"Failed to read metadata from '{path.name}': {exc}. "
+                        "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
+                    )
+        except InputPathResolutionError as exc:
+            return ToolResult.create_error(exc.to_agent_message())
 
 
 class SearchDocumentTool(KaosTool):
@@ -475,37 +538,44 @@ class GetOutlineTool(KaosTool):
             version=_VERSION,
             annotations=_PDF_ANNOTATIONS,
             input_schema=[
-                ParameterSchema(name="path", type="string", description="Path to the PDF file."),
+                ParameterSchema(
+                    name="path",
+                    type="string",
+                    description=_PATH_PARAM_DESCRIPTION,
+                ),
             ],
         )
 
     async def execute(
         self, inputs: dict[str, Any], context: KaosContext | None = None
     ) -> ToolResult:
-        path = inputs["path"]
-        if not Path(path).exists():
-            return ToolResult.create_error(
-                f"File not found: {path}. "
-                "Verify the file path is correct and the file exists. " + _HINT_FILE_NOT_FOUND
-            )
-
-        loop = asyncio.get_running_loop()
+        requested = inputs.get("path", "")
         try:
-            outline = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_pdf_outline(path))
-            page_count = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
-            summary = f"{len(outline)} outline entries in {Path(path).name} ({page_count} pages)"
-            return ToolResult.create_success(
-                output={
-                    "outline": [entry.to_dict() for entry in outline],
-                    "entry_count": len(outline),
-                },
-                summary=summary,
-            )
-        except Exception as exc:
-            return ToolResult.create_error(
-                f"Failed to extract outline from '{Path(path).name}': {exc}. "
-                "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
-            )
+            async with resolve_pdf_input(requested, context) as resolved:
+                path = resolved.path
+                loop = asyncio.get_running_loop()
+                try:
+                    outline = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: get_pdf_outline(path)
+                    )
+                    page_count = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: get_page_count(path)
+                    )
+                    summary = f"{len(outline)} outline entries in {path.name} ({page_count} pages)"
+                    return ToolResult.create_success(
+                        output={
+                            "outline": [entry.to_dict() for entry in outline],
+                            "entry_count": len(outline),
+                        },
+                        summary=summary,
+                    )
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"Failed to extract outline from '{path.name}': {exc}. "
+                        "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
+                    )
+        except InputPathResolutionError as exc:
+            return ToolResult.create_error(exc.to_agent_message())
 
 
 class ClassifyPageTool(KaosTool):
@@ -528,7 +598,11 @@ class ClassifyPageTool(KaosTool):
             version=_VERSION,
             annotations=_PDF_ANNOTATIONS,
             input_schema=[
-                ParameterSchema(name="path", type="string", description="Path to the PDF file."),
+                ParameterSchema(
+                    name="path",
+                    type="string",
+                    description=_PATH_PARAM_DESCRIPTION,
+                ),
                 ParameterSchema(
                     name="page",
                     type="integer",
@@ -541,46 +615,45 @@ class ClassifyPageTool(KaosTool):
     async def execute(
         self, inputs: dict[str, Any], context: KaosContext | None = None
     ) -> ToolResult:
-        path = inputs["path"]
-        if not Path(path).exists():
-            return ToolResult.create_error(
-                f"File not found: {path}. "
-                "Verify the file path is correct and the file exists. " + _HINT_FILE_NOT_FOUND
-            )
-
-        loop = asyncio.get_running_loop()
-        page = inputs.get("page")
+        requested = inputs.get("path", "")
         try:
-            if page is not None:
-                classification = await loop.run_in_executor(
-                    _PDF_EXECUTOR, lambda: classify_page(path, page)
-                )
-                summary = f"Page {page} of {Path(path).name}: {classification}"
-                return ToolResult.create_success(
-                    output={"classification": classification, "page": page},
-                    summary=summary,
-                )
-            else:
-                classification = await loop.run_in_executor(
-                    _PDF_EXECUTOR, lambda: classify_document(path)
-                )
-                summary = f"{Path(path).name}: {classification}"
-                return ToolResult.create_success(
-                    output={"classification": classification, "page": None},
-                    summary=summary,
-                )
-        except IndexError:
-            total = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
-            return ToolResult.create_error(
-                f"Page {page} is out of range. "
-                f"This document has {total} pages (valid indices: 0 to {total - 1}). "
-                + _HINT_PAGE_OUT_OF_RANGE
-            )
-        except Exception as exc:
-            return ToolResult.create_error(
-                f"Classification failed for '{Path(path).name}': {exc}. "
-                "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
-            )
+            async with resolve_pdf_input(requested, context) as resolved:
+                path = resolved.path
+                loop = asyncio.get_running_loop()
+                page = inputs.get("page")
+                try:
+                    if page is not None:
+                        classification = await loop.run_in_executor(
+                            _PDF_EXECUTOR, lambda: classify_page(path, page)
+                        )
+                        summary = f"Page {page} of {path.name}: {classification}"
+                        return ToolResult.create_success(
+                            output={"classification": classification, "page": page},
+                            summary=summary,
+                        )
+                    else:
+                        classification = await loop.run_in_executor(
+                            _PDF_EXECUTOR, lambda: classify_document(path)
+                        )
+                        summary = f"{path.name}: {classification}"
+                        return ToolResult.create_success(
+                            output={"classification": classification, "page": None},
+                            summary=summary,
+                        )
+                except IndexError:
+                    total = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
+                    return ToolResult.create_error(
+                        f"Page {page} is out of range. "
+                        f"This document has {total} pages (valid indices: 0 to {total - 1}). "
+                        + _HINT_PAGE_OUT_OF_RANGE
+                    )
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"Classification failed for '{path.name}': {exc}. "
+                        "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
+                    )
+        except InputPathResolutionError as exc:
+            return ToolResult.create_error(exc.to_agent_message())
 
 
 def register_pdf_documents_tools(runtime: KaosRuntime) -> int:

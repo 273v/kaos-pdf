@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **All six file-input MCP tools now resolve their `path` argument
+  through `kaos_core.path_resolver.resolve_input_path()`** instead of
+  raw `Path(p).exists()` against the process CWD. The affected tools
+  are `kaos-pdf-extract-parse`, `kaos-pdf-extract-page-text`,
+  `kaos-pdf-render-page`, `kaos-pdf-metadata`, `kaos-pdf-get-outline`,
+  and `kaos-pdf-classify-page`. Each tool's `path` parameter now
+  accepts three input shapes — an absolute filesystem path
+  (unchanged), a `kaos://artifacts/<id>` URI returned by a previous
+  extract/materialise tool in the same session, or a relative path
+  that resolves through the session VFS (e.g. files uploaded through
+  a host UI's chat panel). The new
+  `kaos_pdf._path_resolver.resolve_pdf_input()` async context manager
+  centralises the call and constrains accepted mime types to
+  `application/pdf`. Existing absolute-path callers — every CLI
+  invocation, every fixture-based test — continue to work as a
+  passthrough; only the previously-broken VFS / artifact paths are
+  affected. `kaos-pdf-search-document` was already artifact-first via
+  `artifact_id` and is unchanged. (Stage 2 of
+  `kaos-modules/docs/plans/vfs-blind-tools-audit-and-fix-plan.md`,
+  filed after the production incident in single-user-chat session
+  `01KRVYAEA3B1HG95DBAG6H0DJ3` where five uploaded NDA `.docx` files
+  routed through the SPA returned `File not found` from every tool
+  call and the agent then fabricated a legal-analysis table citing
+  those files — the same failure class affected kaos-pdf for any
+  PDF uploaded into the session VFS.)
+
+### Added
+
+- `kaos_pdf._path_resolver.resolve_pdf_input()` — internal async
+  context manager wrapping `kaos_core.path_resolver.resolve_input_path`
+  with the PDF mime allow-list and a stub `KaosContext` for CLI
+  callers. Tools call it instead of `Path(...).exists()`.
+- `ParsePDFTool` now threads the source-artifact id (when the input
+  was a `kaos://artifacts/<id>` URI) into both the parsed-document
+  manifest's metadata (`source_artifact_id` / `source_body_uri`) and
+  the response `structured_content` so downstream tools can trace the
+  parsed `ContentDocument` back to its source PDF artifact without
+  having to re-resolve the original chat scrollback.
+- Every refactored tool's `path` parameter schema now describes the
+  three accepted input shapes (absolute path, `kaos://artifacts/<id>`,
+  session-VFS relative path) so an LLM inspecting the schema can
+  discover that bare artifact URIs are accepted without reading the
+  source.
+
+### Dependencies
+
+- Bumped `kaos-core` requirement from `>=0.1.0a3,<0.2` to
+  `>=0.1.0a9,<0.2` to pick up `kaos_core.path_resolver`.
+
 ## [0.1.0a4] — 2026-05-15
 
 ### Added — tool-group registration entry points (PRD PR 1)

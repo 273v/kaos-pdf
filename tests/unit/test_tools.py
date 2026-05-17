@@ -168,7 +168,9 @@ class TestGetOutlineTool:
         result = await tool.execute({"path": "/nonexistent.pdf"})
         assert result.isError
         msg = result.require_text()
-        assert "Verify" in msg
+        # path-resolver three-part error: "<what>. How to fix: <fix>. Alternative: <tool>."
+        assert "not found" in msg.lower()
+        assert "How to fix" in msg
 
     async def test_outline_metadata(self) -> None:
         tool = GetOutlineTool()
@@ -215,7 +217,9 @@ class TestClassifyPageTool:
         result = await tool.execute({"path": "/nonexistent.pdf"})
         assert result.isError
         msg = result.require_text()
-        assert "Verify" in msg
+        # path-resolver three-part error: "<what>. How to fix: <fix>. Alternative: <tool>."
+        assert "not found" in msg.lower()
+        assert "How to fix" in msg
 
     async def test_classify_metadata(self) -> None:
         tool = ClassifyPageTool()
@@ -263,7 +267,10 @@ class TestErrorMessages:
         result = await tool.execute({"path": "/nonexistent.pdf"}, context=None)
         assert result.isError
         msg = self._error_text(result)
-        assert "Verify" in msg
+        # path-resolver wraps file-not-found in a three-part contract:
+        # "<what>. How to fix: <fix>. Alternative: <tool>."
+        assert "not found" in msg.lower()
+        assert "How to fix" in msg
 
     async def test_page_out_of_range_has_count(self, federal_register_pdf: Path) -> None:
         tool = GetPageTextTool()
@@ -314,23 +321,30 @@ class TestErrorMessages:
         """PDF-005: every File-Not-Found error must include all three parts.
 
         (1) what went wrong, (2) how to fix it, (3) an alternative tool
-        or approach. The third part is the part the audit found missing.
+        or approach. After Stage 2 of the VFS-blind-tools plan the
+        canonical three-part error is composed by
+        ``kaos_core.path_resolver.InputPathResolutionError.to_agent_message()``
+        — vocabulary changes (``How to fix`` / ``Alternative``) but the
+        contract stays the same.
         """
         tool = tool_cls()
         result = await tool.execute(inputs)
         assert result.isError
         msg = self._error_text(result)
         # (1) what
-        assert "File not found" in msg
+        assert "not found" in msg.lower()
         # (2) how
-        assert "Verify" in msg
+        assert "How to fix" in msg
         # (3) alternative — must name at least one concrete tool
+        assert "Alternative" in msg
         assert any(
             name in msg
             for name in (
                 "kaos-source-fs-discover",
                 "kaos-office-extract",
                 "kaos-web-extract",
+                "kaos-core-vfs-list",
+                "kaos-core-list-artifacts",
             )
         ), f"no alternative tool named in: {msg!r}"
 
