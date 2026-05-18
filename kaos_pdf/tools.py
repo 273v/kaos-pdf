@@ -503,6 +503,17 @@ class SearchDocumentTool(KaosTool):
                         "page": r.page,
                         "section_ref": r.section_ref,
                         "section_text": r.section_title,
+                        # Full structural breadcrumb (root-first,
+                        # INCLUDING the immediate section). Empty list
+                        # is the explicit "no enclosing heading"
+                        # contract — agents MUST NOT invent section
+                        # identifiers for hits with empty path. For
+                        # PDFs without an embedded outline, ``path``
+                        # is typically empty; with an outline, it
+                        # carries the chain of enclosing heading
+                        # texts derived by kaos-content's
+                        # ``DocumentView.block_path``.
+                        "path": list(r.path),
                     }
                     for r in search_results.results
                 ],
