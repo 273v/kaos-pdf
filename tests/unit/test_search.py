@@ -50,6 +50,38 @@ class TestSearchDocumentTool:
             assert "page" in r
             assert "block_ref" in r
 
+    async def test_search_returns_path_field(
+        self, federal_register_pdf: Path, runtime: KaosRuntime
+    ) -> None:
+        """Every search hit carries a ``path: list[str]`` structural
+        breadcrumb (root-first, INCLUDING the immediate section). Empty
+        list is the explicit "no enclosing heading" contract — agents
+        must NOT invent section identifiers for hits with empty path.
+        See ``kaos-content.SearchResult.path``.
+        """
+        context = KaosContext.create(session_id="test", runtime=runtime)
+        doc = extract_pdf(federal_register_pdf)
+        manifest = await store_document(doc, runtime, context, name="search-path")
+
+        tool = SearchDocumentTool()
+        result = await tool.execute(
+            {"artifact_id": manifest.artifact_id, "query": "Federal"},
+            context=context,
+        )
+
+        assert not result.isError
+        structured = result.require_structured()
+        results = structured["results"]
+        assert len(results) > 0
+        # Field must be present on every hit; it MAY be empty when the
+        # PDF has no outline / heading structure for that block, which
+        # is the truthful "no structural identifier available" signal.
+        for r in results:
+            assert "path" in r, f"missing 'path' on hit: {r}"
+            assert isinstance(r["path"], list)
+            for crumb in r["path"]:
+                assert isinstance(crumb, str)
+
     async def test_search_no_matches(
         self, federal_register_pdf: Path, runtime: KaosRuntime
     ) -> None:

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a7] — 2026-05-18
+
+### Added
+
+- **`kaos-pdf-search-document` result dicts** now include
+  `path: list[str]` per hit — the structural breadcrumb
+  (root-first, INCLUDING the immediate section). For PDFs with an
+  embedded outline the path carries the chain of enclosing heading
+  texts; for outline-less PDFs (the common case) the path is empty,
+  which is the explicit "no structural identifier available"
+  contract. Downstream agents MUST NOT invent section identifiers
+  for hits with empty `path`. See
+  `kaos-modules/docs/plans/persona-matrix-followups.md` §4.
+
+### Changed
+
+- **kaos-content floor raised to `>=0.1.0a11`** to pick up the
+  structural-breadcrumb contract on `SearchResult.path` and
+  `DocumentView.block_path()`. Pass-through for kaos-pdf internals
+  (the search tool just forwards `r.path` through to its result
+  dict).
+
 ## [0.1.0a6] — 2026-05-17
 
 ### Changed
