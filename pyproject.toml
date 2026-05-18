@@ -40,7 +40,7 @@ classifiers = [
 ]
 dependencies = [
   "kaos-content[images,layout,markdown]>=0.1.0a1,<0.2",
-  "kaos-core>=0.1.0a9,<0.2",
+  "kaos-core>=0.1.0a10,<0.2",
   "pypdfium2>=4.30.0",
 ]
 

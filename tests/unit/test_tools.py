@@ -26,7 +26,7 @@ class TestParsePDFTool:
     async def test_parse_text_pdf(self, federal_register_pdf: Path, runtime: KaosRuntime) -> None:
         context = KaosContext.create(session_id="test", runtime=runtime)
         tool = ParsePDFTool()
-        result = await tool.execute({"path": str(federal_register_pdf)}, context=context)
+        result = await tool.execute({"path": federal_register_pdf.as_uri()}, context=context)
 
         assert not result.isError
         structured = result.require_structured()
@@ -39,7 +39,7 @@ class TestParsePDFTool:
     async def test_parse_multipage(self, cftc_regulations_pdf: Path, runtime: KaosRuntime) -> None:
         context = KaosContext.create(session_id="test", runtime=runtime)
         tool = ParsePDFTool()
-        result = await tool.execute({"path": str(cftc_regulations_pdf)}, context=context)
+        result = await tool.execute({"path": cftc_regulations_pdf.as_uri()}, context=context)
 
         assert not result.isError
         assert result.get_structured("page_count") == 34
@@ -50,7 +50,7 @@ class TestParsePDFTool:
         context = KaosContext.create(session_id="test", runtime=runtime)
         tool = ParsePDFTool()
         result = await tool.execute(
-            {"path": str(cftc_regulations_pdf), "pages": [0, 1]}, context=context
+            {"path": cftc_regulations_pdf.as_uri(), "pages": [0, 1]}, context=context
         )
 
         assert not result.isError
@@ -58,19 +58,19 @@ class TestParsePDFTool:
     async def test_parse_missing_file(self, runtime: KaosRuntime) -> None:
         context = KaosContext.create(session_id="test", runtime=runtime)
         tool = ParsePDFTool()
-        result = await tool.execute({"path": "/nonexistent.pdf"}, context=context)
+        result = await tool.execute({"path": "file:///nonexistent.pdf"}, context=context)
         assert result.isError
 
     async def test_parse_no_context(self, federal_register_pdf: Path) -> None:
         tool = ParsePDFTool()
-        result = await tool.execute({"path": str(federal_register_pdf)}, context=None)
+        result = await tool.execute({"path": federal_register_pdf.as_uri()}, context=None)
         assert result.isError
 
 
 class TestGetPageTextTool:
     async def test_get_text(self, federal_register_pdf: Path) -> None:
         tool = GetPageTextTool()
-        result = await tool.execute({"path": str(federal_register_pdf), "page": 0})
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 0})
         assert not result.isError
         assert len(result.content) > 0
 
@@ -82,7 +82,7 @@ class TestGetPageTextTool:
         envelope or stringified dict.
         """
         tool = GetPageTextTool()
-        result = await tool.execute({"path": str(federal_register_pdf), "page": 0})
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 0})
         assert not result.isError
         # No structured payload — this is a plain-text tool.
         assert result.structuredContent is None
@@ -94,12 +94,12 @@ class TestGetPageTextTool:
 
     async def test_get_text_invalid_page(self, federal_register_pdf: Path) -> None:
         tool = GetPageTextTool()
-        result = await tool.execute({"path": str(federal_register_pdf), "page": 999})
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 999})
         assert result.isError
 
     async def test_get_text_missing_file(self) -> None:
         tool = GetPageTextTool()
-        result = await tool.execute({"path": "/nonexistent.pdf", "page": 0})
+        result = await tool.execute({"path": "file:///nonexistent.pdf", "page": 0})
         assert result.isError
 
 
@@ -108,7 +108,7 @@ class TestRenderPageTool:
         context = KaosContext.create(session_id="test", runtime=runtime)
         tool = RenderPageTool()
         result = await tool.execute(
-            {"path": str(federal_register_pdf), "page": 0, "dpi": 150}, context=context
+            {"path": federal_register_pdf.as_uri(), "page": 0, "dpi": 150}, context=context
         )
 
         assert not result.isError
@@ -120,19 +120,21 @@ class TestRenderPageTool:
     async def test_render_missing_file(self, runtime: KaosRuntime) -> None:
         context = KaosContext.create(session_id="test", runtime=runtime)
         tool = RenderPageTool()
-        result = await tool.execute({"path": "/nonexistent.pdf", "page": 0}, context=context)
+        result = await tool.execute({"path": "file:///nonexistent.pdf", "page": 0}, context=context)
         assert result.isError
 
     async def test_render_no_context(self, federal_register_pdf: Path) -> None:
         tool = RenderPageTool()
-        result = await tool.execute({"path": str(federal_register_pdf), "page": 0}, context=None)
+        result = await tool.execute(
+            {"path": federal_register_pdf.as_uri(), "page": 0}, context=None
+        )
         assert result.isError
 
 
 class TestPDFMetadataTool:
     async def test_metadata(self, federal_register_pdf: Path) -> None:
         tool = PDFMetadataTool()
-        result = await tool.execute({"path": str(federal_register_pdf)})
+        result = await tool.execute({"path": federal_register_pdf.as_uri()})
         assert not result.isError
         structured = result.require_structured()
         assert "page_count" in structured
@@ -140,14 +142,14 @@ class TestPDFMetadataTool:
 
     async def test_metadata_missing(self) -> None:
         tool = PDFMetadataTool()
-        result = await tool.execute({"path": "/nonexistent.pdf"})
+        result = await tool.execute({"path": "file:///nonexistent.pdf"})
         assert result.isError
 
 
 class TestGetOutlineTool:
     async def test_outline_text_pdf(self, cftc_regulations_pdf: Path) -> None:
         tool = GetOutlineTool()
-        result = await tool.execute({"path": str(cftc_regulations_pdf)})
+        result = await tool.execute({"path": cftc_regulations_pdf.as_uri()})
         assert not result.isError
         structured = result.require_structured()
         assert "outline" in structured
@@ -157,7 +159,7 @@ class TestGetOutlineTool:
 
     async def test_outline_no_bookmarks(self, federal_register_pdf: Path) -> None:
         tool = GetOutlineTool()
-        result = await tool.execute({"path": str(federal_register_pdf)})
+        result = await tool.execute({"path": federal_register_pdf.as_uri()})
         assert not result.isError
         structured = result.require_structured()
         assert isinstance(structured["outline"], list)
@@ -165,7 +167,7 @@ class TestGetOutlineTool:
 
     async def test_outline_missing_file(self) -> None:
         tool = GetOutlineTool()
-        result = await tool.execute({"path": "/nonexistent.pdf"})
+        result = await tool.execute({"path": "file:///nonexistent.pdf"})
         assert result.isError
         msg = result.require_text()
         # path-resolver three-part error: "<what>. How to fix: <fix>. Alternative: <tool>."
@@ -183,7 +185,7 @@ class TestGetOutlineTool:
 class TestClassifyPageTool:
     async def test_classify_single_page(self, federal_register_pdf: Path) -> None:
         tool = ClassifyPageTool()
-        result = await tool.execute({"path": str(federal_register_pdf), "page": 0})
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 0})
         assert not result.isError
         structured = result.require_structured()
         assert structured["classification"] in ("text", "image", "mixed", "blank")
@@ -191,7 +193,7 @@ class TestClassifyPageTool:
 
     async def test_classify_whole_document(self, federal_register_pdf: Path) -> None:
         tool = ClassifyPageTool()
-        result = await tool.execute({"path": str(federal_register_pdf)})
+        result = await tool.execute({"path": federal_register_pdf.as_uri()})
         assert not result.isError
         structured = result.require_structured()
         assert structured["classification"] in ("text", "image", "mixed", "scanned", "blank")
@@ -199,14 +201,14 @@ class TestClassifyPageTool:
 
     async def test_classify_scanned_pdf(self, scanned_pdf: Path) -> None:
         tool = ClassifyPageTool()
-        result = await tool.execute({"path": str(scanned_pdf)})
+        result = await tool.execute({"path": scanned_pdf.as_uri()})
         assert not result.isError
         structured = result.require_structured()
         assert structured["classification"] in ("scanned", "image", "mixed")
 
     async def test_classify_page_out_of_range(self, federal_register_pdf: Path) -> None:
         tool = ClassifyPageTool()
-        result = await tool.execute({"path": str(federal_register_pdf), "page": 999})
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 999})
         assert result.isError
         msg = result.require_text()
         assert "out of range" in msg
@@ -214,7 +216,7 @@ class TestClassifyPageTool:
 
     async def test_classify_missing_file(self) -> None:
         tool = ClassifyPageTool()
-        result = await tool.execute({"path": "/nonexistent.pdf"})
+        result = await tool.execute({"path": "file:///nonexistent.pdf"})
         assert result.isError
         msg = result.require_text()
         # path-resolver three-part error: "<what>. How to fix: <fix>. Alternative: <tool>."
@@ -264,7 +266,7 @@ class TestErrorMessages:
 
     async def test_file_not_found_has_guidance(self) -> None:
         tool = ParsePDFTool()
-        result = await tool.execute({"path": "/nonexistent.pdf"}, context=None)
+        result = await tool.execute({"path": "file:///nonexistent.pdf"}, context=None)
         assert result.isError
         msg = self._error_text(result)
         # path-resolver wraps file-not-found in a three-part contract:
@@ -274,7 +276,7 @@ class TestErrorMessages:
 
     async def test_page_out_of_range_has_count(self, federal_register_pdf: Path) -> None:
         tool = GetPageTextTool()
-        result = await tool.execute({"path": str(federal_register_pdf), "page": 999})
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 999})
         assert result.isError
         msg = self._error_text(result)
         assert "out of range" in msg
@@ -282,7 +284,7 @@ class TestErrorMessages:
 
     async def test_no_context_suggests_alternative(self, federal_register_pdf: Path) -> None:
         tool = ParsePDFTool()
-        result = await tool.execute({"path": str(federal_register_pdf)}, context=None)
+        result = await tool.execute({"path": federal_register_pdf.as_uri()}, context=None)
         assert result.isError
         msg = self._error_text(result)
         assert "kaos-pdf-extract-page-text" in msg
@@ -305,12 +307,12 @@ class TestErrorMessages:
     @pytest.mark.parametrize(
         ("tool_cls", "inputs"),
         [
-            (ParsePDFTool, {"path": "/nonexistent.pdf"}),
-            (GetPageTextTool, {"path": "/nonexistent.pdf", "page": 0}),
-            (RenderPageTool, {"path": "/nonexistent.pdf", "page": 0}),
-            (PDFMetadataTool, {"path": "/nonexistent.pdf"}),
-            (GetOutlineTool, {"path": "/nonexistent.pdf"}),
-            (ClassifyPageTool, {"path": "/nonexistent.pdf"}),
+            (ParsePDFTool, {"path": "file:///nonexistent.pdf"}),
+            (GetPageTextTool, {"path": "file:///nonexistent.pdf", "page": 0}),
+            (RenderPageTool, {"path": "file:///nonexistent.pdf", "page": 0}),
+            (PDFMetadataTool, {"path": "file:///nonexistent.pdf"}),
+            (GetOutlineTool, {"path": "file:///nonexistent.pdf"}),
+            (ClassifyPageTool, {"path": "file:///nonexistent.pdf"}),
         ],
     )
     async def test_file_not_found_three_part_error(

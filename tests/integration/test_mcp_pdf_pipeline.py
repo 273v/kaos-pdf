@@ -84,7 +84,7 @@ async def test_parse_pdf_via_mcp_tool(tmp_path: Path, text_pdf: Path) -> None:
         # Call the parse tool
         result = await session.call_tool(
             "kaos-pdf-extract-parse",
-            {"path": str(text_pdf)},
+            {"path": text_pdf.as_uri()},
         )
         assert not result.isError
 

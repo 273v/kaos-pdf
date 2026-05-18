@@ -140,7 +140,7 @@ class TestEnhancedParseResults:
 
         context = KaosContext.create(session_id="test", runtime=runtime)
         tool = ParsePDFTool()
-        result = await tool.execute({"path": str(federal_register_pdf)}, context=context)
+        result = await tool.execute({"path": federal_register_pdf.as_uri()}, context=context)
 
         assert not result.isError
         sc = result.require_structured()
