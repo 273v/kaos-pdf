@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a8] — 2026-05-20
+
+### Changed
+
+- **kaos-core floor raised to `>=0.1.0a12`** (post-URI-redesign +
+  Capability type). WU-F.4 of the 0.1.0 GA plan; catch-up to
+  kaos-core 0.1.0a12. No public API changes in kaos-pdf.
+- Refresh `uv.lock`: kaos-core 0.1.0a10 -> 0.1.0a12, kaos-content
+  0.1.0a11 -> 0.1.0a12, kaos-nlp-core 0.1.0a2 -> 0.1.0a8, ruff
+  0.15.12 -> 0.15.13, ty 0.0.34 -> 0.0.36.
+
 ## [0.1.0a7] — 2026-05-18
 
 ### Added
