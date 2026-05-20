@@ -39,8 +39,8 @@ classifiers = [
   "Typing :: Typed",
 ]
 dependencies = [
-  "kaos-content[images,layout,markdown]>=0.1.0a11,<0.2",
-  "kaos-core>=0.1.0a12,<0.2",
+  "kaos-content[images,layout,markdown]>=0.1.0rc1,<0.2",
+  "kaos-core>=0.1.0rc1,<0.2",
   "pypdfium2>=4.30.0",
 ]
 
@@ -56,7 +56,7 @@ kaos-pdf-serve = "kaos_pdf.serve:main"
 # and import the kaos_pdf tools directly.
 # See docs/oss/checklists/per-package-release.md (F009 #4).
 [project.optional-dependencies]
-nlp = ["kaos-nlp-core>=0.1.0a2,<0.2"]
+nlp = ["kaos-nlp-core>=0.1.0rc1,<0.2"]
 # OCR for scanned PDFs. Ships Tesseract as the default engine.
 # Requires the system tesseract binary (apt/brew/etc.). PaddleOCR will
 # land under a separate [paddle] extra in a follow-up.
@@ -71,7 +71,7 @@ tables = ["pdfplumber>=0.11.0"]
 
 [dependency-groups]
 dev = [
-  "kaos-nlp-core>=0.1.0a2,<0.2",
+  "kaos-nlp-core>=0.1.0rc1,<0.2",
   "pdfplumber>=0.11.0",
   "pytesseract>=0.3.10",
   "pytest>=9.0.3",
