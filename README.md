@@ -28,7 +28,7 @@ a system `tesseract` binary), `[tables]` adds `pdfplumber` (MIT, pure
 Python — no Java, no GPU) for borderless and multi-line tables, and
 `[nlp]` adds `kaos-nlp-core` for BM25 sentence-level search. VLM page
 programs (describe / classify / OCR-via-VLM) live in
-`kaos-llm-core[vision]` ≥ 0.1.0a3 — they were moved out of `kaos-pdf` to
+`kaos-llm-core[vision]` — they were moved out of `kaos-pdf` to
 keep the extraction → LLM dependency direction one-directional. We do not
 and will not depend on AGPL or GPL libraries (this rules out Surya for
 OCR and camelot-lattice / Tabula for tables).
@@ -36,18 +36,18 @@ OCR and camelot-lattice / Tabula for tables).
 ## Install
 
 ```bash
-uv add kaos-pdf
+uv add "kaos-pdf>=0.1.0"
 # or
-pip install kaos-pdf
+pip install "kaos-pdf>=0.1.0"
 
 # OCR for scanned PDFs (requires system tesseract binary)
-uv add 'kaos-pdf[ocr]'
+uv add 'kaos-pdf[ocr]>=0.1.0'
 
 # Structured table extraction via pdfplumber
-uv add 'kaos-pdf[tables]'
+uv add 'kaos-pdf[tables]>=0.1.0'
 
 # BM25 sentence-level search via kaos-nlp-core
-uv add 'kaos-pdf[nlp]'
+uv add 'kaos-pdf[nlp]>=0.1.0'
 ```
 
 `kaos-pdf` requires Python **3.13** or newer (3.14 is supported). The
@@ -147,10 +147,19 @@ in **Concepts** above.
 |---|---|
 | **Python** | 3.13, 3.14 |
 | **OS** | Linux, macOS, Windows (pure-Python wheel; the only native code is the PDFium wheel shipped by `pypdfium2`) |
-| **Maturity** | Alpha (`Development Status :: 3 - Alpha`). The public API is documented in `kaos_pdf.__all__`. |
+| **Maturity** | 0.1.0 GA. The public API is documented in `kaos_pdf.__all__`. |
 | **Stability policy** | Pre-1.0: minor bumps may change behaviour. Every change is documented in [`CHANGELOG.md`](CHANGELOG.md). The MCP tool surface (`kaos-pdf-*` names) and the `KAOS_PDF_*` environment-variable namespace are public API and follow the same policy. |
 | **Test coverage** | 340 unit tests plus a small integration tier hitting the MCP wire end-to-end. Bounded unit gate (`pytest tests/unit -q --no-cov`) finishes in ~35s. |
 | **Type checker** | Validated with [`ty`](https://docs.astral.sh/ty/), Astral's Python type checker. |
+
+## Documentation
+
+Per-package reference: see in-tree docstrings and
+[CHANGELOG.md](CHANGELOG.md).
+
+Cross-cutting KAOS guides (agentic patterns, persona presets, settings
+policy, citations, MCP data flow, migration to 0.1.0 GA) live in
+[`kaos-modules/docs/guides/`](https://github.com/273v/kaos-modules/tree/main/docs/guides).
 
 ## Companion packages
 
