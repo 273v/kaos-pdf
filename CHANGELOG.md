@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — `parse_pdf` rejects non-PDF input with a typed error
+
+`kaos_pdf.parse_pdf` (and its deprecated alias `extract_pdf`) now
+sniffs the input file's first 64 KB via
+`kaos_nlp_core.content_type.detect()` (0.1.1+) and raises
+`PdfExtractionError` with `what` / `how_to_fix` / `alternative_tool`
+details when the bytes do not look like a PDF. The error names the
+detected `group` (e.g. `"office-docx"`, `"image"`) so direct-Python
+callers can route to the correct parser instead of getting an
+opaque pypdfium2 traceback from inside the C extension.
+
+Strictly additive: real PDFs and ambiguous-but-plausible inputs
+(`group="unknown"`) pass through to the existing pypdfium2 pipeline
+unchanged. The guard is also a no-op when `kaos-nlp-core` is not
+importable at runtime — preserving the kaos-pdf-only install path.
+
+Tracked in `kaos-modules/docs/audits/2026-05-22-content-type-detection-unused.md`
+Fix 4.
+
+
 
 ## [0.1.0] — 2026-05-20
 
