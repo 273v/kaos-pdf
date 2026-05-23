@@ -18,6 +18,13 @@ because `kaos-mcp` was not on PyPI when 0.1.0a1 shipped.
 `kaos-pdf-serve` exits 1 with `[mcp]` and `kaos-pdf[mcp]` in stderr
 when `kaos-mcp` is unavailable. Closes audit-04/kaos-pdf.md F-001.
 
+### Changed
+
+- `pyproject.toml` classifier bumped from `Development Status :: 3 - Alpha`
+  to `Development Status :: 5 - Production/Stable` to reflect the
+  0.1.0 GA release (WU-L #543) that froze the public API for the
+  0.1.x line. Closes audit-04/kaos-pdf.md Family D (classifier drift).
+
 ### Changed — `parse_pdf` rejects non-PDF input with a typed error
 
 `kaos_pdf.parse_pdf` (and its deprecated alias `extract_pdf`) now
