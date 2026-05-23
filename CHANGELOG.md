@@ -25,6 +25,19 @@ when `kaos-mcp` is unavailable. Closes audit-04/kaos-pdf.md F-001.
   0.1.0 GA release (WU-L #543) that froze the public API for the
   0.1.x line. Closes audit-04/kaos-pdf.md Family D (classifier drift).
 
+### Fixed — README guarantee aligned with raw-text escape hatch
+
+README:14-21 previously stated "No raw text strings escape — every
+result is an AST node, a typed dataclass, or a `KaosImage`." But
+`extract_page_text(path, page_number)` (and its MCP counterpart
+`kaos-pdf-extract-page-text`) is exported in `__all__` and returns
+the raw `str` from `pypdfium2`'s `get_text_bounded` — an intentional
+lightweight escape hatch that the README failed to disclose.
+README rewritten to make the contract honest: primary parse path is
+AST-grounded; `extract_page_text` is the documented exception for
+lightweight context-free page inspection. Closes
+audit-04/kaos-pdf.md F-002.
+
 ### Changed — `parse_pdf` rejects non-PDF input with a typed error
 
 `kaos_pdf.parse_pdf` (and its deprecated alias `extract_pdf`) now

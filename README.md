@@ -17,8 +17,14 @@ extraction confidence) on every node, plus a small set of read-only MCP
 tools for agentic workflows. The engine is
 [`pypdfium2`](https://github.com/pypdfium2-team/pypdfium2) (Apache-2.0)
 and all PDFium calls are serialised through a global lock so the library
-is safe to call from threaded executors. No raw text strings escape — every
-result is an AST node, a typed dataclass, or a `KaosImage`.
+is safe to call from threaded executors. The primary parse path
+(`parse_pdf`, `extract_outline`, `extract_metadata`, render APIs) returns
+AST nodes, typed dataclasses, or `KaosImage` values with provenance.
+`extract_page_text(path, page_number)` and its MCP counterpart
+`kaos-pdf-extract-page-text` are an intentional escape hatch that
+returns raw page text for lightweight context-free page inspection;
+use the AST path when provenance, structure, or downstream redaction
+/ verification is required.
 
 The base install is intentionally small: three runtime dependencies
 (`kaos-content[images,layout,markdown]`, `kaos-core`, `pypdfium2`) and no
