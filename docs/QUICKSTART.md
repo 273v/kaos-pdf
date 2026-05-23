@@ -149,13 +149,17 @@ kaos-pdf serve --http       # HTTP on localhost:8000
 
 ### Available MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| **ParsePDF** | Extract PDF → ContentDocument artifact with markdown, outline, sections |
-| **SearchDocument** | Search within an extracted document by query |
-| **GetPageText** | Get plain text from a single page |
-| **RenderPage** | Render a page as an image |
-| **PDFMetadata** | Get document metadata and classification |
+Seven tools registered through `register_pdf_tools(runtime)`:
+
+| Tool | MCP name | Description |
+|------|----------|-------------|
+| **ParsePDF** | `kaos-pdf-extract-parse` | Extract PDF → ContentDocument artifact with markdown, outline, sections |
+| **GetPageText** | `kaos-pdf-extract-page-text` | Get plain text from a single page |
+| **RenderPage** | `kaos-pdf-render-page` | Render a page as an image |
+| **PDFMetadata** | `kaos-pdf-metadata` | Get document metadata and classification |
+| **SearchDocument** | `kaos-pdf-search-document` | Search within an extracted document by query |
+| **GetOutline** | `kaos-pdf-get-outline` | Get the PDF's table of contents / bookmarks |
+| **ClassifyPage** | `kaos-pdf-classify-page` | Classify a page as text / scan / form / table-heavy |
 
 ### Workflow
 
