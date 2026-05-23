@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — `[mcp]` extra declared
+
+Declared `[mcp] = ["kaos-mcp>=0.1.0,<0.2"]`. The `kaos-pdf-serve`
+console script, the README install hint, `kaos_pdf/cli.py serve`
+subcommand, and `docs/QUICKSTART.md` all advertised
+`pip install 'kaos-pdf[mcp]'`, but the extra itself was not declared
+because `kaos-mcp` was not on PyPI when 0.1.0a1 shipped.
+`tests/unit/test_serve_install_contract.py` pins the failure path:
+`kaos-pdf-serve` exits 1 with `[mcp]` and `kaos-pdf[mcp]` in stderr
+when `kaos-mcp` is unavailable. Closes audit-04/kaos-pdf.md F-001.
+
 ### Changed — `parse_pdf` rejects non-PDF input with a typed error
 
 `kaos_pdf.parse_pdf` (and its deprecated alias `extract_pdf`) now
