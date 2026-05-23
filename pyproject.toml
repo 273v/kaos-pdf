@@ -48,14 +48,11 @@ dependencies = [
 kaos-pdf = "kaos_pdf.cli:main"
 kaos-pdf-serve = "kaos_pdf.serve:main"
 
-# NOTE: the [mcp] extra is intentionally not declared at 0.1.0a1
-# because `kaos-mcp` is not yet on PyPI. `uv lock` is strict and
-# refuses to resolve any declared extra whose package is unresolvable.
-# `[mcp]` (the MCP server bridge for kaos_pdf.tools) will return once
-# `kaos-mcp` ships on PyPI. Until then, install kaos-mcp from source
-# and import the kaos_pdf tools directly.
-# See docs/oss/checklists/per-package-release.md (F009 #4).
 [project.optional-dependencies]
+# MCP server — required by the `kaos-pdf-serve` console script
+# (see `kaos_pdf.serve`). Install with `pip install kaos-pdf[mcp]`
+# to run the PDF MCP server.
+mcp = ["kaos-mcp>=0.1.0,<0.2"]
 nlp = ["kaos-nlp-core>=0.1.0,<0.2"]
 # OCR for scanned PDFs. Ships Tesseract as the default engine.
 # Requires the system tesseract binary (apt/brew/etc.). PaddleOCR will
