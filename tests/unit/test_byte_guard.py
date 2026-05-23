@@ -54,7 +54,16 @@ class TestByteGuard:
     def test_docx_renamed_pdf_raises_typed_error(self, tmp_path: Path) -> None:
         """A DOCX renamed ``report.pdf`` must fail at the guard, NOT
         deep in pypdfium2. The error carries the detected group so
-        downstream callers can route correctly."""
+        downstream callers can route correctly.
+
+        With kaos-nlp-core 0.1.1+ the detector's OPC fallback classifies
+        the synthetic DOCX as ``office-docx`` (and the guard's
+        ``alternative_tool`` points at ``kaos-office.parse_docx``).
+        With 0.1.0 the detector reports the underlying zip container as
+        ``archive`` and the guard still refuses with a typed error —
+        less specific alternative_tool but the contract (don't crash
+        in pypdfium2) holds. Assert the contract; tolerate either
+        upstream classification."""
         spoofed = tmp_path / "report.pdf"
         spoofed.write_bytes(_minimal_docx_bytes())
 
@@ -62,8 +71,14 @@ class TestByteGuard:
             parse_pdf(spoofed)
 
         details = exc.value.details
-        assert details.get("detected_group") == "office-docx"
-        assert "kaos-office" in (details.get("alternative_tool") or "")
+        # Guard fired (the load-bearing contract):
+        assert details.get("detected_group") not in (None, "pdf"), (
+            f"guard did not refuse spoofed DOCX; details: {details}"
+        )
+        # 0.1.1+ refinement: alternative_tool points to the office parser.
+        if details.get("detected_group") == "office-docx":
+            assert "kaos-office" in (details.get("alternative_tool") or "")
+        # Filename surfaced in the message for human triage.
         assert "report.pdf" in str(exc.value)
 
     def test_png_renamed_pdf_raises_typed_error(self, tmp_path: Path) -> None:
