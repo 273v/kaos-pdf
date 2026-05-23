@@ -25,6 +25,7 @@ from kaos_content.model.attr import BoundingBox, Provenance, SourceRef
 from kaos_content.model.document import ContentDocument
 from kaos_core.logging import get_logger
 
+from kaos_pdf.errors import PdfExtractionError
 from kaos_pdf.model import PdfMetadata, PdfOutlineEntry
 
 if TYPE_CHECKING:
@@ -64,6 +65,92 @@ FPDF_PAGEOBJ_FORM = 5
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+# ---- Defense-in-depth: byte-level type guard ----------------------------
+
+
+def _assert_pdf_or_skip(path: Path) -> None:
+    """Refuse non-PDF input with a typed error when kaos-nlp-core is
+    available; silently pass-through (preserving legacy behavior) when
+    it isn't.
+
+    The audit at
+    ``kaos-modules/docs/audits/2026-05-22-content-type-detection-unused.md``
+    Fix 4 calls this out as defense-in-depth: even with bytes-routing
+    dispatchers upstream (kaos-ui PR #26, kaos-agents PR #71),
+    direct-Python callers that import :func:`extract_pdf` /
+    :func:`parse_pdf` deserve a clear error instead of a pypdfium2
+    traceback when they accidentally hand us a DOCX or PNG.
+
+    Returns ``None`` and leaves the caller to invoke pypdfium2 when:
+    - ``kaos-nlp-core`` isn't importable (preserves the kaos-pdf-only
+      install path), or
+    - detection succeeds and returns ``group="pdf"`` or ``group="unknown"``
+      (the latter covers in-the-wild PDFs whose first 64KB don't
+      contain a clean magic-byte signature — let pypdfium2 try).
+
+    Raises :class:`~kaos_pdf.errors.PdfExtractionError` when detection
+    succeeds and returns a non-PDF, non-unknown group.
+    """
+    try:
+        from kaos_nlp_core.content_type import detect
+    except ImportError:
+        return  # kaos-nlp-core not on the path — preserve legacy behavior.
+
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(65536)  # 64KB — generous; the OPC fallback
+            # inside detect() opens the central directory itself when
+            # the head doesn't contain enough signal.
+        result = detect(head)
+    except FileNotFoundError:
+        # Let the existing pypdfium2 path produce the canonical
+        # not-found error rather than swallow it here.
+        return
+    except Exception:  # pragma: no cover — defensive
+        # Any detection failure should not block extraction; pypdfium2
+        # remains the authoritative parser.
+        return
+
+    if result.group in ("pdf", "unknown"):
+        return
+
+    alternative: str | None = None
+    if result.group == "office-docx":
+        alternative = "kaos-office.parse_docx"
+    elif result.group == "office-pptx":
+        alternative = "kaos-office.parse_pptx"
+    elif result.group == "office-xlsx":
+        alternative = "kaos-office.parse_xlsx"
+    elif result.group == "image":
+        alternative = "kaos-content image bridge (PIL.Image.open + KaosImage)"
+    elif result.group == "html":
+        alternative = "kaos-content.parsers.html.parse_html"
+
+    message = (
+        f"expected a PDF at {path.name!r} but the bytes look like "
+        f"content-type group {result.group!r} "
+        f"(detected MIME: {result.mime_type or 'unknown'}). "
+        "Route this file through the parser that matches its real type, "
+        "or check whether the upload was renamed / corrupted."
+    )
+    raise PdfExtractionError(
+        message,
+        what=(
+            f"expected a PDF at {path.name!r} but the bytes look like "
+            f"content-type group {result.group!r} "
+            f"(detected MIME: {result.mime_type or 'unknown'})"
+        ),
+        how_to_fix=(
+            "route this file through the parser that matches its real "
+            "type, or check whether the upload was renamed / corrupted"
+        ),
+        alternative_tool=alternative,
+        detected_group=result.group,
+        detected_mime=result.mime_type,
+        path=str(path),
+    )
 
 
 def extract_pdf(
@@ -161,6 +248,17 @@ def extract_pdf(
     """
     path = Path(source).resolve()
     source_uri = path.as_uri()
+
+    # Defense-in-depth: refuse non-PDF input with a clear, actionable
+    # error before handing it to pypdfium2. Without this guard,
+    # mis-routed DOCX / PPTX / image / unknown bytes died deep inside
+    # the C parser with an opaque error like "invalid object stream";
+    # downstream callers (capstones, scripts, third-party integrations
+    # that don't already sniff bytes upstream) had no way to see what
+    # the file actually was. The byte-sniff is best-effort: when
+    # kaos-nlp-core is unavailable at runtime we skip the guard
+    # rather than acquire a hard runtime dependency on it.
+    _assert_pdf_or_skip(path)
 
     # Engine-mode table detection runs BEFORE the pypdfium2 pipeline so
     # extracted tables are indexed by page and stitched into the
