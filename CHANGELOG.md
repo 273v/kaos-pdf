@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.1.2] — 2026-05-24
+
+### Changed — drop extension-driven mime allowlist in tool path resolver
+
+`resolve_pdf_input` no longer passes ``allowed_mime_types=_PDF_MIMES``
+to `kaos_core.path_resolver.resolve_input_path`. The allowlist routed
+purely on filename SUFFIX (`_guess_mime_from_path` is suffix-only), so
+a real PDF saved as ``contract.txt`` — which attorneys do constantly
+when exporting from Word, Outlook attachments, scan tools, etc. — was
+rejected with "appears to be 'text/plain'; this tool requires
+application/pdf" even though the bytes were valid PDF. Surfaced by
+the kaos-agents corpus-stress S02 scenario on 2026-05-24.
+
+The constant `_PDF_MIMES` is now exposed in `__all__` so the tool
+layer can content-sniff bytes post-resolve and emit friendlier "this
+file looks like DOCX, try kaos-office-parse-docx" errors. The actual
+PDF parser (`parse_pdf` via pypdfium2) already fails clearly on
+non-PDF input via the existing `_HINT_CORRUPTED_PDF` branch, so
+incorrect-content input still surfaces an actionable error.
+
+No public API or schema change; existing pipelines that pass correctly
+named ``.pdf`` files behave identically.
+
+
 ## [0.1.1] — 2026-05-23
 
 ### Added — `[mcp]` extra declared

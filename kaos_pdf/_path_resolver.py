@@ -39,11 +39,17 @@ if TYPE_CHECKING:
     from kaos_core.base.context import KaosContext
     from kaos_core.path_resolver import ResolvedInput
 
-# Mime types this package's tools will accept. Filesystem inputs that
-# don't have a ``.pdf`` suffix slip through (the resolver only enforces
-# when it can identify a mime type), so this is a soft hint rather than
-# an absolute guard — corrupt-or-misnamed input still fails at parse
-# time via the existing _HINT_CORRUPTED_PDF branch.
+# Mime types this package's tools accept. Exposed for tool-layer use
+# (e.g. friendlier "this file looks like DOCX, try kaos-office-parse-docx"
+# post-resolve errors), NOT passed to the resolver as an allowlist:
+# kaos-core's resolver guesses mime from filename SUFFIX only, so a
+# real PDF saved as ``contract.txt`` (which attorneys do constantly)
+# used to be rejected with "appears to be 'text/plain'; this tool
+# requires application/pdf" even though the bytes were valid PDF.
+# Surfaced by the corpus-stress suite (S02 / S10) on 2026-05-24 and
+# fixed by dropping the suffix-driven gate at this layer. Tools call
+# their parser on the resolved bytes; pypdfium2 fails clearly on
+# non-PDF input via the existing _HINT_CORRUPTED_PDF branch.
 _PDF_MIMES: tuple[str, ...] = ("application/pdf",)
 
 
@@ -54,10 +60,9 @@ async def resolve_pdf_input(
 ) -> AsyncIterator[ResolvedInput]:
     """Resolve a PDF file/URI input to a real ``pathlib.Path``.
 
-    Wraps :func:`kaos_core.path_resolver.resolve_input_path` with the
-    kaos-pdf-specific mime allow-list and a fallback ``KaosContext`` so
-    tools invoked without a runtime (CLI smoke tests) still resolve
-    absolute paths.
+    Wraps :func:`kaos_core.path_resolver.resolve_input_path` with a
+    fallback ``KaosContext`` so tools invoked without a runtime (CLI
+    smoke tests) still resolve absolute paths.
 
     Parameters
     ----------
@@ -77,9 +82,8 @@ async def resolve_pdf_input(
     ------
     kaos_core.path_resolver.InputPathResolutionError
         When the input cannot be resolved (empty, malformed URI,
-        missing in VFS and on disk, mime-type mismatch, etc.). Callers
-        should surface ``exc.to_agent_message()`` via
-        ``ToolResult.create_error(...)``.
+        missing in VFS and on disk, etc.). Callers should surface
+        ``exc.to_agent_message()`` via ``ToolResult.create_error(...)``.
     """
     if context is None:
         from kaos_core.base.context import KaosContext as _KaosContext
@@ -88,9 +92,9 @@ async def resolve_pdf_input(
     async with resolve_input_path(
         path_or_uri,
         context=context,
-        allowed_mime_types=_PDF_MIMES,
+        allowed_mime_types=None,
     ) as resolved:
         yield resolved
 
 
-__all__ = ["resolve_pdf_input"]
+__all__ = ["_PDF_MIMES", "resolve_pdf_input"]
