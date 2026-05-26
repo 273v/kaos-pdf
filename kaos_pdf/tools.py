@@ -370,6 +370,166 @@ class RenderPageTool(KaosTool):
             return ToolResult.create_error(exc.to_agent_message())
 
 
+class OcrPageTool(KaosTool):
+    """OCR a single PDF page via the Tesseract engine.
+
+    Pairs with :class:`ClassifyPageTool` (which identifies scanned
+    pages) and :class:`RenderPageTool` (which produces an image
+    artifact). When the agent finds a scanned page, calling this tool
+    recovers the underlying text — closing corpus-stress S03 (the
+    scanned-PDF needle was unrecoverable because the library had
+    ``TesseractEngine`` but no MCP entry point).
+    """
+
+    @property
+    def metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            name="kaos-pdf-ocr-page",
+            display_name="OCR PDF Page",
+            description=(
+                "Run OCR on a single PDF page and return the recognized text "
+                "with confidence. Use this on scanned (image-only) PDFs where "
+                "'kaos-pdf-extract-page-text' returns empty. Requires Tesseract "
+                "installed on the host. Pair with 'kaos-pdf-classify-page' to "
+                "confirm a page is scanned before paying the OCR cost."
+            ),
+            category=ToolCategory.DOCUMENT,
+            capability=ToolCapability.EXTRACT,
+            module_name=_MODULE,
+            version=_VERSION,
+            annotations=_PDF_ANNOTATIONS,
+            input_schema=[
+                ParameterSchema(
+                    name="path",
+                    type="string",
+                    description=_PATH_PARAM_DESCRIPTION,
+                ),
+                ParameterSchema(
+                    name="page",
+                    type="integer",
+                    description="0-based page index.",
+                ),
+                ParameterSchema(
+                    name="dpi",
+                    type="integer",
+                    description=(
+                        "Rasterization DPI before OCR (default 300). Bitmap-"
+                        "font scans benefit from 400+; clean printed scans "
+                        "are fine at 300."
+                    ),
+                    required=False,
+                    default=300,
+                ),
+                ParameterSchema(
+                    name="lang",
+                    type="string",
+                    description=(
+                        "Tesseract language code (default 'eng'). Use '+'-"
+                        "separated to combine: 'eng+fra'."
+                    ),
+                    required=False,
+                    default="eng",
+                ),
+                ParameterSchema(
+                    name="psm",
+                    type="integer",
+                    description=(
+                        "Page Segmentation Mode (default 6 = uniform block). "
+                        "Common alternatives: 3 = auto layout, 11 = sparse, "
+                        "12 = sparse + OSD."
+                    ),
+                    required=False,
+                    default=6,
+                ),
+                ParameterSchema(
+                    name="oem",
+                    type="integer",
+                    description=(
+                        "OCR Engine Mode (default 3 = default). 0 = legacy, "
+                        "1 = LSTM, 2 = legacy+LSTM."
+                    ),
+                    required=False,
+                    default=3,
+                ),
+            ],
+        )
+
+    async def execute(
+        self, inputs: dict[str, Any], context: KaosContext | None = None
+    ) -> ToolResult:
+        from kaos_pdf.ocr.tesseract import TesseractEngine, TesseractNotInstalledError
+
+        requested = inputs.get("path", "")
+        try:
+            async with resolve_pdf_input(requested, context) as resolved:
+                path = resolved.path
+                dpi = int(inputs.get("dpi", 300))
+                lang = str(inputs.get("lang", "eng"))
+                psm = int(inputs.get("psm", 6))
+                oem = int(inputs.get("oem", 3))
+                page_idx = int(inputs["page"])
+
+                loop = asyncio.get_running_loop()
+                try:
+                    img = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: render_page(path, page_idx, dpi=dpi)
+                    )
+                except IndexError:
+                    total = await loop.run_in_executor(_PDF_EXECUTOR, lambda: get_page_count(path))
+                    return ToolResult.create_error(
+                        f"Page {page_idx} is out of range. "
+                        f"This document has {total} pages (valid indices: 0 to {total - 1}). "
+                        + _HINT_PAGE_OUT_OF_RANGE
+                    )
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"Page render failed for '{path.name}': {exc}. "
+                        "The file may be corrupted or not a valid PDF. " + _HINT_CORRUPTED_PDF
+                    )
+
+                engine = TesseractEngine(lang=lang, psm=psm, oem=oem)
+                try:
+                    result = await loop.run_in_executor(
+                        _PDF_EXECUTOR, lambda: engine.extract_sync(img)
+                    )
+                except TesseractNotInstalledError as exc:
+                    return ToolResult.create_error(
+                        f"OCR engine unavailable: {exc}. "
+                        "Install: 'apt install tesseract-ocr' (Linux), "
+                        "'brew install tesseract' (macOS), and "
+                        "'pip install kaos-pdf[ocr]'. "
+                        "Alternative: 'kaos-pdf-extract-page-text' for "
+                        "PDFs that already have a text layer."
+                    )
+                except Exception as exc:
+                    return ToolResult.create_error(
+                        f"OCR failed for page {page_idx} of '{path.name}': {exc}. "
+                        "Retry with a higher DPI or a different PSM."
+                    )
+
+                text = result.text
+                mean_conf = result.mean_confidence
+                summary = (
+                    f"OCR'd page {page_idx} of '{path.name}' "
+                    f"({len(result.lines)} lines, mean conf {mean_conf:.2f}, "
+                    f"{len(text)} chars)"
+                )
+                return ToolResult.create_text(
+                    summary + "\n\n" + text,
+                    structuredContent={
+                        "text": text,
+                        "mean_confidence": mean_conf,
+                        "line_count": len(result.lines),
+                        "engine": result.engine_name,
+                        "page": page_idx,
+                        "dpi": dpi,
+                        "lang": lang,
+                    },
+                )
+        except InputPathResolutionError as exc:
+            return ToolResult.create_error(exc.to_agent_message())
+
+
 class PDFMetadataTool(KaosTool):
     """Get PDF file metadata and document classification."""
 
@@ -681,6 +841,7 @@ def register_pdf_documents_tools(runtime: KaosRuntime) -> int:
         ParsePDFTool(),
         GetPageTextTool(),
         RenderPageTool(),
+        OcrPageTool(),
         PDFMetadataTool(),
         SearchDocumentTool(),
         GetOutlineTool(),

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4] — 2026-05-26
+
+Corpus-stress S03 fix: ship the missing OCR MCP tool. kaos-pdf has
+shipped a complete `TesseractEngine` at `kaos_pdf/ocr/tesseract.py`
+since 0.1.0 but never exposed it as an MCP entry point — the agent
+could `kaos-pdf-render-page` to get an image, `kaos-pdf-classify-page`
+to confirm a page is scanned, and then had no tool to recover text.
+0.1.4 closes that gap.
+
+Closes corpus-stress Failure 3 (S03 scanned-PDF OCR) in
+`kaos-modules/docs/plans/2026-05-26-corpus-stress-5-failure-resolution.md`.
+
+### Added
+
+* `kaos-pdf-ocr-page` MCP tool. Inputs: `path`, `page`, `dpi` (default
+  300), `lang` (default `eng`), `psm` (default 6 = uniform block),
+  `oem` (default 3 = default). Output: `structuredContent` carrying
+  `text`, `mean_confidence`, `line_count`, `engine` (`tesseract`),
+  `page`, `dpi`, `lang`. Internally renders the page through the
+  existing `render_page` path and runs the rendered `KaosImage`
+  through `TesseractEngine.extract_sync` on the same single-threaded
+  PDFium executor the other PDF tools use.
+* `register_pdf_documents_tools` and `register_pdf_tools` now return
+  `8` (was `7`) — the new tool joins the documents group (read-only,
+  idempotent).
+
+### Tests
+
+* `tests/unit/test_tools.py::TestOcrPageTool` — end-to-end through the
+  tool surface on a synthesized scanned PDF (skips when reportlab /
+  tesseract are unavailable), plus error-path coverage for missing
+  files and out-of-range pages, plus a text-PDF round-trip that
+  asserts OCR is not an error path for already-text documents (the
+  agent might invoke OCR as a fallback before classifying — the tool
+  must not error in that flow).
+* Updated `test_register_includes_search` and `TestRegisterTools`
+  count assertions from 7 to 8 with rationale comments pointing at
+  this changelog entry.
 
 ## [0.1.2] — 2026-05-24
 

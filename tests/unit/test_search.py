@@ -158,7 +158,8 @@ class TestSearchDocumentTool:
 class TestRegisterPdfToolsIncludesSearch:
     def test_register_includes_search(self, runtime: KaosRuntime) -> None:
         count = register_pdf_tools(runtime)
-        assert count == 7
+        # 8 tools after 0.1.4 added kaos-pdf-ocr-page.
+        assert count == 8
 
         tool_names = {t.metadata.name for t in runtime.tools.list_tool_objects()}
         assert "kaos-pdf-search-document" in tool_names

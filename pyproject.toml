@@ -74,6 +74,11 @@ dev = [
   "pytest>=9.0.3",
   "pytest-asyncio>=1.3.0",
   "pytest-cov>=7.1.0",
+  # reportlab is a TEST-ONLY dep used by the synthetic scanned-PDF
+  # fixture in tests/unit/test_tools.py::TestOcrPageTool. kaos-pdf
+  # production code does not depend on reportlab; we only need it to
+  # build the image-only PDF that exercises the OCR pipeline.
+  "reportlab>=4.0",
   "ruff>=0.15.12",
   "ty>=0.0.34,<0.1",
 ]
