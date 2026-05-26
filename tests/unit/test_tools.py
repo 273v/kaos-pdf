@@ -12,6 +12,7 @@ from kaos_pdf.tools import (
     ClassifyPageTool,
     GetOutlineTool,
     GetPageTextTool,
+    OcrPageTool,
     ParsePDFTool,
     PDFMetadataTool,
     RenderPageTool,
@@ -129,6 +130,124 @@ class TestRenderPageTool:
             {"path": federal_register_pdf.as_uri(), "page": 0}, context=None
         )
         assert result.isError
+
+
+class TestOcrPageTool:
+    """OCR tool for scanned-PDF pages.
+
+    Closes corpus-stress S03 (Failure 3 in
+    ``2026-05-26-corpus-stress-5-failure-resolution.md``): kaos-pdf had
+    a complete ``TesseractEngine`` at ``kaos_pdf/ocr/tesseract.py`` but
+    exposed no MCP wrapper, so the agent could render a scanned page
+    but had no tool to OCR it. This adds the missing entry point.
+    """
+
+    async def test_ocr_scanned_synthetic_pdf(self, tmp_path: Path) -> None:
+        """End-to-end: render → OCR through the tool surface.
+
+        Synthesizes a bitmap-font scanned PDF carrying a distinctive
+        token, runs ``kaos-pdf-ocr-page``, and asserts the token
+        survives tesseract OCR. The token deliberately uses a
+        high-confidence vocabulary ("FALCON" is unambiguous to
+        tesseract; mixed-case or numerals would be flakier).
+
+        Requires tesseract + pytesseract on the host. Skips otherwise
+        — the contract this test pins is "the tool wraps the engine,"
+        not "tesseract OCR is perfect on bitmap fonts".
+        """
+        pytest.importorskip("pytesseract")
+        pytest.importorskip("PIL")
+        pytest.importorskip("reportlab")
+
+        try:
+            import pytesseract
+
+            pytesseract.get_tesseract_version()
+        except Exception as exc:
+            pytest.skip(f"tesseract binary not available: {exc}")
+
+        from PIL import Image, ImageDraw, ImageFont
+        from reportlab.lib.pagesizes import LETTER
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen import canvas
+
+        # Build an image-only PDF with a distinctive token.
+        token = "FALCON"
+        img = Image.new("RGB", (1700, 2200), color="white")
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.load_default()
+        draw.text((60, 60), "INTERNAL MEMO", fill="black", font=font)
+        draw.text((60, 120), f"Codename: {token}", fill="black", font=font)
+        import io
+
+        png_buf = io.BytesIO()
+        img.save(png_buf, format="PNG")
+        png_buf.seek(0)
+        pdf_path = tmp_path / "scanned.pdf"
+        c = canvas.Canvas(str(pdf_path), pagesize=LETTER)
+        pw, ph = LETTER
+        c.drawImage(
+            ImageReader(png_buf),
+            x=0,
+            y=0,
+            width=pw,
+            height=ph,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+        c.showPage()
+        c.save()
+
+        tool = OcrPageTool()
+        result = await tool.execute({"path": pdf_path.as_uri(), "page": 0, "dpi": 300})
+
+        assert not result.isError, f"OCR errored: {result.content}"
+        structured = result.require_structured()
+        assert "text" in structured
+        # The distinctive token must survive OCR. Tesseract on bitmap
+        # fonts can mangle small words ("Oryx" → "Onyx") but reliably
+        # recovers all-caps tokens of 5+ characters.
+        assert token in structured["text"], (
+            f"planted token {token!r} missing from OCR output {structured['text']!r}"
+        )
+        assert structured["mean_confidence"] > 0.0
+        assert structured["line_count"] >= 1
+        assert structured["engine"] == "tesseract"
+
+    async def test_ocr_missing_file(self) -> None:
+        """OCR returns a clear path-resolution error for missing files."""
+        tool = OcrPageTool()
+        result = await tool.execute({"path": "file:///nonexistent.pdf", "page": 0})
+        assert result.isError
+
+    async def test_ocr_page_out_of_range(self, federal_register_pdf: Path) -> None:
+        """Out-of-range page emits the standard agent-facing hint."""
+        tool = OcrPageTool()
+        # Real Federal Register fixture has 1 page; page=99 is out of range.
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 99})
+        assert result.isError
+
+    async def test_ocr_text_pdf_round_trips(self, federal_register_pdf: Path) -> None:
+        """OCR on a text PDF still produces SOMETHING (it rasterizes first).
+
+        Edge case: passing a text-layer PDF to OCR is not an error
+        path — the renderer produces an image of the rasterized page
+        and tesseract OCRs that. The result is lower-quality than the
+        text-layer extraction, but the tool MUST NOT error here
+        because the agent might call OCR as a fallback without first
+        knowing the page is scanned.
+        """
+        pytest.importorskip("pytesseract")
+        try:
+            import pytesseract
+
+            pytesseract.get_tesseract_version()
+        except Exception as exc:
+            pytest.skip(f"tesseract binary not available: {exc}")
+
+        tool = OcrPageTool()
+        result = await tool.execute({"path": federal_register_pdf.as_uri(), "page": 0, "dpi": 200})
+        assert not result.isError
 
 
 class TestPDFMetadataTool:
@@ -366,12 +485,17 @@ def test_pdf_005_error_hints_all_name_alternatives() -> None:
 class TestRegisterTools:
     def test_register(self, runtime: KaosRuntime) -> None:
         count = register_pdf_tools(runtime)
-        assert count == 7
+        # 8 tools as of 0.1.4: ParsePDF, GetPageText, RenderPage, OcrPage,
+        # PDFMetadata, SearchDocument, GetOutline, ClassifyPage. OcrPage
+        # was added to close corpus-stress S03 (scanned-PDF OCR was
+        # unrecoverable because the engine existed but had no MCP entry).
+        assert count == 8
 
         tool_names = {t.metadata.name for t in runtime.tools.list_tool_objects()}
         assert "kaos-pdf-extract-parse" in tool_names
         assert "kaos-pdf-extract-page-text" in tool_names
         assert "kaos-pdf-render-page" in tool_names
+        assert "kaos-pdf-ocr-page" in tool_names
         assert "kaos-pdf-metadata" in tool_names
         assert "kaos-pdf-search-document" in tool_names
         assert "kaos-pdf-get-outline" in tool_names
@@ -382,12 +506,12 @@ class TestRegisterTools:
 
         Pins the SessionToolSet ``documents`` group entry point: a
         caller that wants only document reads (no future writers) gets
-        the same 7 tools today. When ``register_pdf_authoring_tools``
+        the same 8 tools today. When ``register_pdf_authoring_tools``
         starts shipping writers, those land in the ``authoring`` group
         and stay out of this list.
         """
         count = register_pdf_documents_tools(runtime)
-        assert count == 7
+        assert count == 8
         # Every documents tool is read-only by ToolAnnotations.
         for tool in runtime.tools.list_tool_objects():
             annotations = tool.metadata.annotations
