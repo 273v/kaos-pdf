@@ -27,6 +27,7 @@ from kaos_core.logging import get_logger
 
 from kaos_pdf.errors import PdfExtractionError
 from kaos_pdf.model import PdfMetadata, PdfOutlineEntry
+from kaos_pdf.quality import DEFAULT_OCR_QUALITY_THRESHOLD, is_low_quality_layer
 
 if TYPE_CHECKING:
     from kaos_content.model.tabular import TabularDocument
@@ -169,6 +170,7 @@ def extract_pdf(
     ocr_engine: OCREngine | None = None,
     ocr_dpi: int = 300,
     ocr_min_confidence: float = 0.0,
+    ocr_quality_threshold: float = DEFAULT_OCR_QUALITY_THRESHOLD,
     tables: TableMode = "geometric",
     table_engine: TableEngine | None = None,
 ) -> ContentDocument:
@@ -212,13 +214,18 @@ def extract_pdf(
             scorers. No effect on single-column PDFs.
         ocr: OCR policy. ``"never"`` (default, safe) preserves legacy
             behavior — scanned pages emit empty paragraphs. ``"auto"``
-            runs OCR only on pages where native text extraction
-            produced nothing; born-digital pages pass through untouched.
-            ``"always"`` runs OCR on every page and ignores native text
-            — useful for re-OCR of mixed PDFs with known-bad
-            embedded text layers. Default is ``"never"`` so existing
-            callers don't silently acquire an OCR dependency; switch
-            to ``"auto"`` when you want scan-aware extraction.
+            runs OCR on pages where native text extraction produced
+            nothing, AND on structurally-scanned pages (those carrying
+            raster image content) whose native text layer looks garbled
+            per ``ocr_quality_threshold`` — this recovers scanned PDFs
+            that ship a present-but-mangled OCR layer (Canon scans,
+            stale Paper-Capture passes). Born-digital text pages always
+            pass through untouched. ``"always"`` runs OCR on every page
+            and ignores native text — the deterministic option for
+            re-OCR of mixed PDFs with known-bad embedded text layers.
+            Default is ``"never"`` so existing callers don't silently
+            acquire an OCR dependency; switch to ``"auto"`` when you
+            want scan-aware extraction.
         ocr_engine: Optional :class:`~kaos_pdf.ocr.base.OCREngine`
             instance. If ``None`` and OCR would run, a default Tesseract
             engine is created lazily. Callers wanting PaddleOCR or a
@@ -230,6 +237,16 @@ def extract_pdf(
         ocr_min_confidence: Drop OCR lines whose per-line confidence is
             below this threshold. 0.0 (default) keeps everything; 0.5
             is a sensible "real signal only" floor for noisy scans.
+        ocr_quality_threshold: Worst-line legibility (English-dictionary
+            hit-rate in ``[0, 1]``) below which an ``ocr="auto"``
+            scanned page is treated as having a garbled native text
+            layer and re-OCR'd. Default
+            :data:`~kaos_pdf.quality.DEFAULT_OCR_QUALITY_THRESHOLD`
+            (0.35) only triggers on genuinely mangled blocks; raise it
+            to re-OCR more aggressively, lower it (or use 0.0) to
+            disable garbled-layer detection and restore the legacy
+            empty-layer-only ``"auto"`` behavior. Only consulted for
+            ``ocr="auto"``.
         tables: Table detection strategy (FUND-4). ``"geometric"``
             (default) preserves the legacy rect-clustering detector so
             existing callers get byte-for-byte identical output.
@@ -287,6 +304,7 @@ def extract_pdf(
                 ocr_engine=ocr_engine,
                 ocr_dpi=ocr_dpi,
                 ocr_min_confidence=ocr_min_confidence,
+                ocr_quality_threshold=ocr_quality_threshold,
                 tables=tables,
                 engine_tables=engine_tables,
             )
@@ -550,6 +568,7 @@ def _extract_document(
     ocr_engine: OCREngine | None = None,
     ocr_dpi: int = 300,
     ocr_min_confidence: float = 0.0,
+    ocr_quality_threshold: float = DEFAULT_OCR_QUALITY_THRESHOLD,
     tables: TableMode = "geometric",
     engine_tables: list[ExtractedTable] | None = None,
 ) -> ContentDocument:
@@ -647,6 +666,7 @@ def _extract_document(
             ocr_engine=ocr_engine,
             ocr_dpi=ocr_dpi,
             ocr_min_confidence=ocr_min_confidence,
+            ocr_quality_threshold=ocr_quality_threshold,
             source_uri=source_uri,
         )
 
@@ -2597,6 +2617,7 @@ def _run_ocr_per_page(
     ocr_engine: OCREngine | None,
     ocr_dpi: int,
     ocr_min_confidence: float,
+    ocr_quality_threshold: float,
     source_uri: str,
 ) -> list[OCRResult | None]:
     """Decide per-page whether OCR should run, run it, return results.
@@ -2604,9 +2625,11 @@ def _run_ocr_per_page(
     Policy:
 
     - ``ocr="always"``  → OCR every page in ``page_indices``.
-    - ``ocr="auto"``    → OCR pages whose native rects list is empty
-      OR whose flat rects contain no non-whitespace text. Pages with
-      real native text pass through untouched.
+    - ``ocr="auto"``    → OCR pages whose native rects are empty/blank,
+      OR structurally-scanned pages (raster image content) whose native
+      text layer scores below ``ocr_quality_threshold`` (a garbled
+      embedded OCR layer). Born-digital text pages pass through
+      untouched.
     - ``ocr="never"``   → should never reach this function.
 
     Engine construction is lazy: if the caller passed ``ocr_engine=None``
@@ -2625,7 +2648,19 @@ def _run_ocr_per_page(
     for i, page_idx in enumerate(page_indices):
         if page_idx < 0 or page_idx >= n_pages:
             continue
-        if not _should_run_ocr(ocr, all_page_rects[i]):
+
+        page_rects = all_page_rects[i]
+        page: pdfium.PdfPage | None = None
+        run = _should_run_ocr(ocr, page_rects)
+        if not run and ocr == "auto":
+            # Native text is present. Re-OCR only when the page is
+            # structurally a scan (carries raster image content) AND its
+            # native layer looks garbled — recovering present-but-mangled
+            # embedded OCR without ever touching born-digital text pages.
+            page = doc[page_idx]
+            run = _is_garbled_scan_layer(page, page_rects, ocr_quality_threshold)
+
+        if not run:
             continue
 
         if engine is None:
@@ -2633,7 +2668,8 @@ def _run_ocr_per_page(
 
             engine = get_default_engine()
 
-        page = doc[page_idx]
+        if page is None:
+            page = doc[page_idx]
         image = _render_page_to_image(
             page,
             page_idx,
@@ -2658,12 +2694,13 @@ def _should_run_ocr(
     ocr: OCRMode,
     page_rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
 ) -> bool:
-    """Return True if OCR should run for a page given the policy.
+    """Return True if OCR should run for a page given the empty-layer policy.
 
-    ``"auto"`` is the interesting case: we inspect the native rects
-    and run OCR iff there is no extractable text. We intentionally
-    don't re-classify via ``_classify_page`` here — the native rect
-    extraction already tells us whether text came back.
+    ``"auto"`` runs OCR iff there is no extractable native text. The
+    garbled-but-present-layer case is handled separately by
+    :func:`_is_garbled_scan_layer` (it needs the page object to confirm
+    the page is structurally a scan before trusting a text-quality
+    signal).
     """
     if ocr == "never":
         return False
@@ -2673,6 +2710,34 @@ def _should_run_ocr(
     if not page_rects:
         return True
     return not any((text or "").strip() for text, _bbox, _font in page_rects)
+
+
+def _is_garbled_scan_layer(
+    page: pdfium.PdfPage,
+    page_rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+    threshold: float,
+) -> bool:
+    """Return True when ``page`` is a scan with a garbled native text layer.
+
+    Two gates, both required:
+
+    1. **Structural** — :func:`_classify_page` reports ``"image"`` or
+       ``"mixed"`` (the page carries raster image content). Born-digital
+       ``"text"`` pages are excluded so clean digital text is never
+       re-OCR'd, even if a line happens to score low.
+    2. **Legibility** — the joined native text scores below ``threshold``
+       per :func:`kaos_pdf.quality.is_low_quality_layer` (worst
+       substantial line below threshold).
+
+    A non-positive ``threshold`` disables the check entirely, restoring
+    the legacy empty-layer-only ``"auto"`` behavior.
+    """
+    if threshold <= 0.0:
+        return False
+    if _classify_page(page) not in ("image", "mixed"):
+        return False
+    page_text = "\n".join(text for text, _bbox, _font in page_rects)
+    return is_low_quality_layer(page_text, threshold=threshold)
 
 
 def _emit_ocr_blocks(

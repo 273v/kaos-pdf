@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* Garbled-native-layer detection for `ocr="auto"`. Many scanned PDFs ship a
+  present-but-mangled native text layer (Canon scans, stale Paper-Capture
+  passes) — e.g. a title block that reads `"0RlGlt IAt lJn tbe @nitp!
+  btutts"` instead of "In the United States Court of Federal Claims".
+  Previously `ocr="auto"` only re-OCR'd pages with an *empty* native layer, so
+  the garbage was returned verbatim. `"auto"` now also re-OCRs a
+  structurally-scanned page (one carrying raster image content) whose native
+  text layer scores below a legibility threshold, recovering readable text.
+  Born-digital text pages are never affected.
+* New `ocr_quality_threshold` parameter on `extract_pdf` / `parse_pdf` /
+  `extract_pdf_bytes` / `parse_pdf_bytes` (default
+  `kaos_pdf.DEFAULT_OCR_QUALITY_THRESHOLD` = 0.35). Set it to `0.0` to disable
+  garbled-layer detection and restore the legacy empty-layer-only `"auto"`
+  behavior; raise it to re-OCR more aggressively. Only consulted for
+  `ocr="auto"`.
+* New public `kaos_pdf.quality` module with `line_legibility`,
+  `assess_text_quality`, `is_low_quality_layer`, `LayerQuality`, and
+  `DEFAULT_OCR_QUALITY_THRESHOLD`, exported from the top-level package. These
+  surface a cheap English-dictionary legibility signal so callers can measure
+  native-layer quality directly.
+* Bundled English word list (`kaos_pdf/data/english_words.txt.gz`, derived from
+  SCOWL; see `WORDLIST_PROVENANCE.md` and `NOTICE`). Loaded lazily on first use
+  of the quality heuristic — importing `kaos_pdf` does no file I/O, and callers
+  that never use `ocr="auto"` never pay for it.
+
 ## [0.1.4] — 2026-05-26
 
 Corpus-stress S03 fix: ship the missing OCR MCP tool. kaos-pdf has

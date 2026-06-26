@@ -45,6 +45,13 @@ from kaos_pdf.ocr import (
     TesseractNotInstalledError,
 )
 from kaos_pdf.ocr import get_default_engine as get_default_ocr_engine
+from kaos_pdf.quality import (
+    DEFAULT_OCR_QUALITY_THRESHOLD,
+    LayerQuality,
+    assess_text_quality,
+    is_low_quality_layer,
+    line_legibility,
+)
 from kaos_pdf.tables import (
     ExtractedTable,
     TableEngine,
@@ -99,11 +106,13 @@ extract_pdf_bytes = _deprecated_alias(
 
 
 __all__ = [
+    "DEFAULT_OCR_QUALITY_THRESHOLD",
     "ClassifyPageTool",
     "ExtractedTable",
     "GetOutlineTool",
     "GetPageTextTool",
     "KaosPdfError",
+    "LayerQuality",
     "OCREngine",
     "OCRLine",
     "OCRMode",
@@ -125,6 +134,7 @@ __all__ = [
     "TesseractEngine",
     "TesseractNotInstalledError",
     "__version__",
+    "assess_text_quality",
     "classify_document",
     "classify_page",
     "extract_page_text",
@@ -136,6 +146,8 @@ __all__ = [
     "get_page_count",
     "get_pdf_metadata",
     "get_pdf_outline",
+    "is_low_quality_layer",
+    "line_legibility",
     "parse_pdf",
     "parse_pdf_bytes",
     "register_pdf_authoring_tools",

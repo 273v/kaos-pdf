@@ -6,3 +6,23 @@ This product includes software developed at 273 Ventures LLC
 
 Licensed under the Apache License, Version 2.0. See the LICENSE file
 distributed with this software for the full text of the license.
+
+---
+
+This product bundles an English word list at
+``kaos_pdf/data/english_words.txt.gz``, used by the OCR text-quality
+heuristic. The list is derived from SCOWL (Spell Checker Oriented Word
+Lists), Copyright 2000-2011 by Kevin Atkinson, and is redistributed under
+SCOWL's permissive license:
+
+  Permission to use, copy, modify, distribute and sell these word lists,
+  the associated scripts, the output created from the scripts, and its
+  documentation for any purpose is hereby granted without fee, provided
+  that the above copyright notice appears in all copies and that both that
+  copyright notice and this permission notice appear in supporting
+  documentation. Kevin Atkinson makes no representations about the
+  suitability of this array for any purpose. It is provided "as is" without
+  express or implied warranty.
+
+See ``kaos_pdf/data/WORDLIST_PROVENANCE.md`` for source and generation
+details.

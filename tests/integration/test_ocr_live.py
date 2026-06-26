@@ -196,3 +196,35 @@ def test_ocr_min_confidence_filters_low_conf_lines(tmp_path: Path) -> None:
     assert strict <= permissive, (
         f"Strict mode should drop lines: permissive={permissive}, strict={strict}"
     )
+
+
+@pytest.mark.integration
+def test_auto_recovers_garbled_native_layer(fixtures_dir: Path) -> None:
+    """``ocr="auto"`` re-OCRs a scanned page whose native layer is garbled.
+
+    ``staten_v_united_states.pdf`` (a Canon scan) ships a present-but-mangled
+    native text layer: its first page reads ``"0RlGlt IAt lJn tbe @nitp!
+    btutts ..."`` where the document actually says "In the United States Court
+    of Federal Claims". With ``ocr="auto"`` the garbled page is re-OCR'd by
+    Tesseract and the recovered text is materially more legible.
+    """
+    if not _HAS_TESSERACT:
+        pytest.skip("tesseract binary not installed on PATH")
+
+    from kaos_content.serializers.markdown import serialize_markdown
+
+    from kaos_pdf import assess_text_quality, parse_pdf
+
+    src = str(fixtures_dir / "staten_v_united_states.pdf")
+    native = serialize_markdown(parse_pdf(src, pages=[0], ocr="never"))
+    recovered = serialize_markdown(parse_pdf(src, pages=[0], ocr="auto"))
+
+    # The garbled page is re-OCR'd, so the output changes substantively.
+    assert native != recovered
+    # And the recovered text is more legible than the garbled native layer.
+    assert assess_text_quality(recovered).score > assess_text_quality(native).score
+    # Tesseract reliably recovers these caption tokens that the garbled
+    # native layer mangles ("@lsims", "btutts", etc.).
+    lowered = recovered.lower()
+    assert "court" in lowered
+    assert "federal" in lowered
