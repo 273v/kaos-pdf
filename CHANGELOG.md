@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+* `kaos-pdf extract` CLI gains `--ocr {never,auto,always}` (default `never`)
+  and `--ocr-dpi` (default 300), bringing the CLI to parity with the Python
+  API's OCR controls. Previously OCR was reachable only via the Python API and
+  the `kaos-pdf-ocr-page` MCP tool. `--ocr never` (the default) passes no OCR
+  kwargs, preserving the legacy no-OCR-dependency behavior.
 * Garbled-native-layer detection for `ocr="auto"`. Many scanned PDFs ship a
   present-but-mangled native text layer (Canon scans, stale Paper-Capture
   passes) — e.g. a title block that reads `"0RlGlt IAt lJn tbe @nitp!
