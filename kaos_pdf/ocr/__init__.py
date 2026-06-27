@@ -31,12 +31,15 @@ See :mod:`docs/design/fund-3-ocr-pipeline.md` for the full design.
 from __future__ import annotations
 
 from kaos_pdf.ocr.base import OCREngine, OCRLine, OCRResult
+from kaos_pdf.ocr.rapidocr import RapidOcrEngine, RapidOcrNotInstalledError
 from kaos_pdf.ocr.tesseract import TesseractEngine, TesseractNotInstalledError
 
 __all__ = [
     "OCREngine",
     "OCRLine",
     "OCRResult",
+    "RapidOcrEngine",
+    "RapidOcrNotInstalledError",
     "TesseractEngine",
     "TesseractNotInstalledError",
     "get_default_engine",

@@ -16,7 +16,7 @@ shortens the local feedback loop; CI remains the final gate.
 
 `kaos-pdf` requires Python 3.13 or newer. It publishes the `kaos_pdf`
 import package. This package publishes CLI entry point(s): `kaos-pdf`, `kaos-pdf-serve`.
-Public extras currently declared: `nlp`, `ocr`, `tables`.
+Public extras currently declared: `nlp`, `ocr`, `onnx`, `tables`.
 
 
 ## Before Opening A PR

@@ -44,6 +44,8 @@ uvx pre-commit install
 Public extras are optional and must stay lazy:
 
 - `ocr` for Tesseract-backed OCR.
+- `onnx` for local ONNX OCR via RapidOCR (PP-OCRv5 on ONNX Runtime;
+  Apache-2.0 code + models; no PyTorch / no transformers runtime).
 - `tables` for `pdfplumber` table extraction.
 - `nlp` for BM25 sentence-level search through `kaos-nlp-core`.
 

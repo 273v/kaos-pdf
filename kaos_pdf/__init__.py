@@ -41,6 +41,8 @@ from kaos_pdf.ocr import (
     OCREngine,
     OCRLine,
     OCRResult,
+    RapidOcrEngine,
+    RapidOcrNotInstalledError,
     TesseractEngine,
     TesseractNotInstalledError,
 )
@@ -124,6 +126,8 @@ __all__ = [
     "PdfNotFoundError",
     "PdfOutlineEntry",
     "PdfRenderError",
+    "RapidOcrEngine",
+    "RapidOcrNotInstalledError",
     "RenderPageTool",
     "SearchDocumentTool",
     "SearchResult",
