@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* Local ONNX OCR engine via RapidOCR (`[onnx]` extra). `RapidOcrEngine`
+  (exported from `kaos_pdf` and `kaos_pdf.ocr`) runs PP-OCRv5 detection +
+  recognition models on ONNX Runtime — a higher-accuracy, zero-system-binary
+  alternative to Tesseract, CPU-only, with **no PyTorch and no Hugging Face
+  `transformers` runtime**. RapidOCR code and the bundled PP-OCR models are
+  both Apache-2.0, preserving kaos-pdf's permissive-only dependency posture.
+  Use it through the existing pluggable hook:
+  `parse_pdf(..., ocr="always", ocr_engine=RapidOcrEngine())`. Install with
+  `pip install 'kaos-pdf[onnx]'`; the ONNX model files download on first use
+  (cached) — nothing is fetched at import time, and the base install is
+  unchanged. Missing-extra construction raises `RapidOcrNotInstalledError`
+  with install guidance.
+
 ## [0.1.5] — 2026-06-26
 
 Scan-aware OCR: recover garbled native text layers and reach OCR from the CLI.

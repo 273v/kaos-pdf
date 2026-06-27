@@ -55,9 +55,15 @@ kaos-pdf-serve = "kaos_pdf.serve:main"
 mcp = ["kaos-mcp>=0.1.0,<0.2"]
 nlp = ["kaos-nlp-core>=0.1.0,<0.2"]
 # OCR for scanned PDFs. Ships Tesseract as the default engine.
-# Requires the system tesseract binary (apt/brew/etc.). PaddleOCR will
-# land under a separate [paddle] extra in a follow-up.
+# Requires the system tesseract binary (apt/brew/etc.).
 ocr = ["pytesseract>=0.3.10"]
+# Local ONNX OCR via RapidOCR (PP-OCRv5 models on ONNX Runtime). A
+# higher-accuracy, zero-system-binary alternative to Tesseract — pure
+# onnxruntime on CPU, no PyTorch / no transformers runtime. RapidOCR code
+# and the bundled PP-OCR models are both Apache-2.0. Models download on
+# first use (cached); nothing is fetched at import time. Use via
+# `parse_pdf(..., ocr_engine=RapidOcrEngine())`.
+onnx = ["rapidocr>=3.0.0", "onnxruntime>=1.17.0"]
 # Structured table extraction. Default engine is pdfplumber
 # (MIT, pure Python, no Java/GPU).
 tables = ["pdfplumber>=0.11.0"]

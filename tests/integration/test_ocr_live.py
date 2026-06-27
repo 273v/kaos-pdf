@@ -13,6 +13,7 @@ tests skip — per CLAUDE.md's testing policy we never silently pass.
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import shutil
 from pathlib import Path
@@ -25,6 +26,7 @@ from PIL import Image, ImageDraw, ImageFont
 from kaos_pdf import extract_pdf
 
 _HAS_TESSERACT = shutil.which("tesseract") is not None
+_HAS_RAPIDOCR = importlib.util.find_spec("rapidocr") is not None
 
 
 def _render_text_to_pdf_bytes(text: str, *, width: int = 850, height: int = 1100) -> bytes:
@@ -196,6 +198,40 @@ def test_ocr_min_confidence_filters_low_conf_lines(tmp_path: Path) -> None:
     assert strict <= permissive, (
         f"Strict mode should drop lines: permissive={permissive}, strict={strict}"
     )
+
+
+@pytest.mark.integration
+def test_rapidocr_engine_recovers_text() -> None:
+    """The local ONNX RapidOCR engine recovers text from a rendered image.
+
+    Gated on the ``[onnx]`` extra (``rapidocr`` importable). RapidOCR downloads
+    its PP-OCRv5 ONNX models on first use, so this test needs network access
+    the first time it runs on a host; it skips entirely when the extra is
+    absent (the default CI dev environment).
+    """
+    if not _HAS_RAPIDOCR:
+        pytest.skip("rapidocr not installed (pip install 'kaos-pdf[onnx]')")
+
+    from kaos_content.images.model import KaosImage
+
+    from kaos_pdf.ocr import RapidOcrEngine
+
+    image = Image.new("RGB", (760, 170), "white")
+    draw = ImageDraw.Draw(image)
+    font = _find_font(size=34)
+    draw.text((20, 30), "In the United States Court", fill="black", font=font)
+    draw.text((20, 95), "of Federal Claims No. 15-308C", fill="black", font=font)
+
+    result = RapidOcrEngine().extract_sync(KaosImage.from_pil(image))
+    assert result.engine_name == "rapidocr"
+    assert result.lines, "RapidOCR should recover at least one line"
+    text = result.text.lower()
+    assert "united states" in text
+    assert "federal claims" in text
+    # Per-line confidences are normalized; boxes are populated.
+    for line in result.lines:
+        assert 0.0 <= line.confidence <= 1.0
+        assert line.bbox is not None
 
 
 @pytest.mark.integration
