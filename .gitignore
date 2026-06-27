@@ -11,3 +11,6 @@ dist/
 build/
 htmlcov/
 coverage.xml
+
+# Claude Code agent worktrees / local files
+.claude/

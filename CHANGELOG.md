@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5] — 2026-06-26
+
+Scan-aware OCR: recover garbled native text layers and reach OCR from the CLI.
+
 ### Added
 
 * `kaos-pdf extract` CLI gains `--ocr {never,auto,always}` (default `never`)
