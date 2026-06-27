@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-06-26
+
+Local ONNX OCR engine (RapidOCR / PP-OCRv5) as a higher-accuracy, permissive
+alternative to Tesseract.
+
 ### Added
 
 * Local ONNX OCR engine via RapidOCR (`[onnx]` extra). `RapidOcrEngine`
