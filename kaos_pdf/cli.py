@@ -44,6 +44,22 @@ def main(argv: list[str] | None = None) -> None:
     p_extract.add_argument("--stdin", action="store_true", help="Read PDF bytes from stdin")
     p_extract.add_argument("--no-headings", action="store_true", help="Disable heading detection")
     p_extract.add_argument("--no-tables", action="store_true", help="Disable table extraction")
+    p_extract.add_argument(
+        "--ocr",
+        choices=["never", "auto", "always"],
+        default="never",
+        help=(
+            "OCR policy (default: never). 'auto' OCRs empty and garbled "
+            "scanned text layers; 'always' re-OCRs every page. Requires the "
+            "[ocr] extra and the system tesseract binary."
+        ),
+    )
+    p_extract.add_argument(
+        "--ocr-dpi",
+        type=int,
+        default=300,
+        help="DPI to render pages at before OCR (default: 300). Only used when --ocr runs.",
+    )
 
     # search
     p_search = sub.add_parser("search", help="Search within a PDF")
@@ -154,6 +170,9 @@ def _cmd_extract(args: argparse.Namespace) -> None:
         extract_kwargs["detect_headings"] = False
     if args.no_tables:
         extract_kwargs["extract_tables"] = False
+    if args.ocr != "never":
+        extract_kwargs["ocr"] = args.ocr
+        extract_kwargs["ocr_dpi"] = args.ocr_dpi
 
     if args.stdin:
         data = sys.stdin.buffer.read()

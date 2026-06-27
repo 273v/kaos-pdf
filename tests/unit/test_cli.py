@@ -78,6 +78,51 @@ class TestExtractCommand:
         assert outfile.exists()
         assert len(outfile.read_text()) > 0
 
+    def test_extract_ocr_auto_on_born_digital_is_noop(self):
+        # ``--ocr auto`` on a born-digital PDF triggers no OCR (no Tesseract
+        # needed) and yields the same output as the default.
+        default = StringIO()
+        with patch("sys.stdout", default):
+            main(["extract", TEST1])
+        auto = StringIO()
+        with patch("sys.stdout", auto):
+            main(["extract", TEST1, "--ocr", "auto"])
+        assert auto.getvalue() == default.getvalue()
+
+    def test_extract_ocr_flags_forwarded(self):
+        # The CLI flags must reach parse_pdf as the documented kwargs. Mock
+        # parse_pdf (so 'always' needs no Tesseract) but return a real doc so
+        # serialization still works.
+        from kaos_pdf import parse_pdf
+
+        real_doc = parse_pdf(TEST1)
+        with (
+            patch("kaos_pdf.parse_pdf", return_value=real_doc) as mock_parse,
+            patch("sys.stdout", StringIO()),
+        ):
+            main(["extract", TEST1, "--ocr", "always", "--ocr-dpi", "150"])
+        _, kwargs = mock_parse.call_args
+        assert kwargs["ocr"] == "always"
+        assert kwargs["ocr_dpi"] == 150
+
+    def test_extract_never_omits_ocr_kwargs(self):
+        # Default (--ocr never) must not pass ocr kwargs, preserving the
+        # legacy no-OCR-dependency contract.
+        from kaos_pdf import parse_pdf
+
+        real_doc = parse_pdf(TEST1)
+        with (
+            patch("kaos_pdf.parse_pdf", return_value=real_doc) as mock_parse,
+            patch("sys.stdout", StringIO()),
+        ):
+            main(["extract", TEST1])
+        _, kwargs = mock_parse.call_args
+        assert "ocr" not in kwargs
+
+    def test_extract_rejects_invalid_ocr_mode(self):
+        with pytest.raises(SystemExit):
+            main(["extract", TEST1, "--ocr", "bogus"])
+
 
 class TestSearchCommand:
     def test_search_found(self):

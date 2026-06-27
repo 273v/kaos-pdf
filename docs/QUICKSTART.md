@@ -20,7 +20,14 @@ kaos-pdf extract document.pdf --format text            # → plain text
 kaos-pdf extract document.pdf --format json            # → JSON AST
 kaos-pdf extract document.pdf --pages 1-5              # → first 5 pages
 kaos-pdf extract document.pdf --pages 1,3,7-10         # → specific pages
+kaos-pdf extract scan.pdf --ocr auto                  # → OCR empty/garbled scans
+kaos-pdf extract scan.pdf --ocr always --ocr-dpi 400  # → re-OCR every page
 ```
+
+`--ocr auto` runs OCR on scanned pages with an empty or garbled native text
+layer and leaves born-digital text untouched; `--ocr always` re-OCRs every
+page. Both require the `[ocr]` extra (`pip install kaos-pdf[ocr]`) and the
+system `tesseract` binary.
 
 ### Search Within a PDF
 
