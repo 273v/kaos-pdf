@@ -36,6 +36,12 @@ jobs:
       - name: Install Python 3.13
         run: uv python install 3.13
 
+      # At lowest-direct resolution, pycairo pins to a version with no wheel and
+      # builds from source, which needs the cairo system library + pkg-config.
+      # (The locked `test` lane resolves a pycairo wheel, so it doesn't need this.)
+      - name: Install system build deps (pycairo needs cairo)
+        run: sudo apt-get update && sudo apt-get install -y libcairo2-dev pkg-config
+
       - name: Install with lowest-direct resolution
         run: uv sync --group dev --resolution=lowest-direct --python 3.13
 
