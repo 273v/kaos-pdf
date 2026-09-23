@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-09-22
+
 ### Fixed
 
 * Raised the `pypdfium2` floor to `>=5.0.0`. Image extraction
   (`extract_images=True`) calls `PdfObject.get_bounds()`, which pypdfium2 4.x
   names `get_pos()`, so installs resolving 4.x silently produced no `Figure`
   blocks.
+
+### Dependencies
+
+* Lockfile refresh: pillow 12.3.0 and pydantic-settings 2.15.0 (security),
+  pypdfium2 5.13.0, rapidocr 3.9.2, onnxruntime 1.30.0, and Python 3.15
+  wheels for numpy / rpds-py.
 
 ## [0.1.6] — 2026-06-26
 
