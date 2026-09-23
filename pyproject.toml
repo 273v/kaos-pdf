@@ -85,7 +85,7 @@ dev = [
   # production code does not depend on reportlab; we only need it to
   # build the image-only PDF that exercises the OCR pipeline.
   "reportlab>=4.0",
-  "ruff>=0.15.12",
+  "ruff>=0.16.8",
   "ty>=0.0.34,<0.1",
 ]
 
