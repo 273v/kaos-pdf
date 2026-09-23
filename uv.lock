@@ -553,7 +553,7 @@ requires-dist = [
     { name = "kaos-nlp-core", marker = "extra == 'nlp'", specifier = ">=0.1.0,<0.2" },
     { name = "onnxruntime", marker = "extra == 'onnx'", specifier = ">=1.17.0" },
     { name = "pdfplumber", marker = "extra == 'tables'", specifier = ">=0.11.0" },
-    { name = "pypdfium2", specifier = ">=4.30.0" },
+    { name = "pypdfium2", specifier = ">=5.0.0" },
     { name = "pytesseract", marker = "extra == 'ocr'", specifier = ">=0.3.10" },
     { name = "rapidocr", marker = "extra == 'onnx'", specifier = ">=3.0.0" },
 ]
