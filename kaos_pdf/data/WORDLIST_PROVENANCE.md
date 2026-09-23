@@ -33,6 +33,7 @@ SCOWL is freely redistributable under a permissive MIT/BSD-style notice
 
 ```python
 import gzip, pathlib
+
 src = pathlib.Path("/usr/share/dict/american-english").read_text(errors="ignore").splitlines()
 words = set()
 for w in src:
