@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-09-23
+
+### Fixed
+
+- **`[mcp]` extra now requires `kaos-mcp>=0.1.5`.** Earlier kaos-mcp releases
+  leave `mcp` unbounded, so an install could resolve `mcp` 2.x, which removed
+  `mcp.server.fastmcp`, and `import kaos_mcp` failed. kaos-mcp 0.1.5 pins
+  `mcp<2`.
+
 ## [0.1.7] — 2026-09-22
 
 ### Fixed
