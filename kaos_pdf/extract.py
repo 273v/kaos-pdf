@@ -1442,6 +1442,45 @@ def _detect_char_level_columns(
     return valid_columns
 
 
+def _wide_line_fragment_indices(
+    rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+    width_threshold: float,
+    tolerance: float,
+) -> set[int]:
+    """Find wide visual lines assembled from tightly adjacent fragments."""
+    indices = sorted(
+        (i for i, (text, _bbox, _fi) in enumerate(rects) if text.strip()),
+        key=lambda i: (-(rects[i][1][1] + rects[i][1][3]) / 2, rects[i][1][0]),
+    )
+    rows: list[list[int]] = []
+    center = 0.0
+    for index in indices:
+        bbox = rects[index][1]
+        y = (bbox[1] + bbox[3]) / 2
+        if not rows or abs(y - center) > tolerance:
+            rows.append([])
+            center = y
+        rows[-1].append(index)
+    wide: set[int] = set()
+    for row in rows:
+        groups: list[list[int]] = []
+        right = 0.0
+        for index in sorted(row, key=lambda i: rects[i][1][0]):
+            bbox = rects[index][1]
+            if not groups or bbox[0] - right > min(4.0, tolerance * 2):
+                groups.append([])
+                right = bbox[2]
+            else:
+                right = max(right, bbox[2])
+            groups[-1].append(index)
+        for group in groups:
+            left = min(rects[i][1][0] for i in group)
+            right = max(rects[i][1][2] for i in group)
+            if right - left >= width_threshold:
+                wide.update(group)
+    return wide
+
+
 def _get_text_rectangles_column_aware(
     textpage: pdfium.PdfTextPage,
     *,
@@ -1536,23 +1575,17 @@ def _get_text_rectangles_column_aware(
         int, list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
     ] = {i: [] for i in range(len(detected_columns))}
 
-    # PDFium can split a word into adjacent rectangles. Keep short fragments
-    # next to a full-width line with that line, rather than in a false column.
-    wide_boxes = [
-        bbox
-        for text, bbox, _fi in raw
+    wide_indices = {
+        i
+        for i, (text, bbox, _fi) in enumerate(raw)
         if text.strip() and abs(bbox[2] - bbox[0]) >= fullwidth_threshold
-    ]
-    for text, (left, bottom, right, top), fi in raw:
+    }
+    if combine_fragments:
+        wide_indices.update(_wide_line_fragment_indices(raw, fullwidth_threshold, y_tolerance))
+    for index, (text, (left, bottom, right, top), fi) in enumerate(raw):
         if not text.strip():
             continue
-        rect_width = abs(right - left)
-        joins_wide_line = combine_fragments and any(
-            abs((top + bottom - anchor_top - anchor_bottom) / 2) <= y_tolerance
-            and max(anchor_left - right, left - anchor_right, 0.0) <= y_tolerance
-            for anchor_left, anchor_bottom, anchor_right, anchor_top in wide_boxes
-        )
-        if rect_width >= fullwidth_threshold or joins_wide_line:
+        if index in wide_indices:
             fullwidth_rects.append((text, (left, bottom, right, top), fi))
         else:
             x_center = (left + right) / 2

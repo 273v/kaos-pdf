@@ -77,3 +77,29 @@ def test_separate_columns_are_not_joined(tmp_path: Path, monkeypatch: pytest.Mon
     text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
     assert text.index("Left first") < text.index("Left second") < text.index("Right first")
     assert text.index("Right first") < text.index("Right second")
+
+
+def test_multiple_short_fragments_form_one_full_width_provision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "fragmented-line.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 12)
+    left = "Information maintained for record-"
+    right = "keeping shall not be used for another purpose."
+    pdf.drawString(72, 720, left)
+    pdf.drawString(72 + pdf.stringWidth(left, "Helvetica", 12) + 1, 720, right)
+    pdf.drawString(
+        72, 650, "The next provision has a full width line across the page for comparison."
+    )
+    pdf.drawString(72, 540, "(a)")
+    pdf.drawString(400, 540, "(b)")
+    pdf.save()
+    monkeypatch.setattr(
+        "kaos_pdf.extract._detect_char_level_columns",
+        lambda *args, **kwargs: [(72.0, 300.0), (320.0, 600.0)],
+    )
+    text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
+    assert (
+        "Information maintained for record-keeping shall not be used for another purpose." in text
+    )

@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Short adjacent word fragments stay with their full-width visual line instead
+- Short adjacent word fragments, including lines assembled from multiple narrow
+  pieces, stay with their full-width visual line instead
   of being displaced into a false column. Separate columns remain separate.
 - Full-width headings and provisions retain top-to-bottom reading order when
   narrow labels trigger column detection. Interleaving previously reversed
