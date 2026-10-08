@@ -126,3 +126,12 @@ def test_low_punctuation_fragment_stays_with_its_line(
     )
     text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
     assert "information from consumers," in text
+
+
+def test_overlapping_short_word_requires_normal_line_tolerance() -> None:
+    from kaos_pdf.extract import _shares_visual_line
+
+    body = (72.0, 717.0, 400.0, 728.0)
+    lower_fragment = (401.0, 715.0, 405.0, 720.0)
+    assert not _shares_visual_line(lower_fragment, body, 2.0)
+    assert _shares_visual_line(lower_fragment, body, 2.0, punctuation=True)

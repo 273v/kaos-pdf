@@ -1211,6 +1211,7 @@ def _shares_visual_line(
     bbox: tuple[float, float, float, float],
     reference: tuple[float, float, float, float],
     tolerance: float,
+    punctuation: bool = False,
 ) -> bool:
     """Retain short baseline punctuation next to a taller text fragment."""
     left, bottom, right, top = bbox
@@ -1219,7 +1220,8 @@ def _shares_visual_line(
         return True
     height, other_height = abs(top - bottom), abs(other_top - other_bottom)
     return (
-        min(height, other_height) <= max(height, other_height) * 0.6
+        punctuation
+        and height <= other_height * 0.6
         and min(top, other_top) > max(bottom, other_bottom)
         and max(left - other_right, other_left - right, 0.0) <= 4.0
     )
@@ -1287,7 +1289,10 @@ def _get_text_rectangles(
         y_center = (top + bottom) / 2
 
         if current_y is None or _shares_visual_line(
-            (left, bottom, right, top), (cb[0], cb[1], cb[2], cb[3]), y_tolerance
+            (left, bottom, right, top),
+            (cb[0], cb[1], cb[2], cb[3]),
+            y_tolerance,
+            punctuation=not any(char.isalnum() for char in text),
         ):
             if current_y is None:
                 current_y = y_center
@@ -1476,7 +1481,12 @@ def _wide_line_fragment_indices(
     reference: tuple[float, float, float, float] | None = None
     for index in indices:
         bbox = rects[index][1]
-        if reference is None or not _shares_visual_line(bbox, reference, tolerance):
+        if reference is None or not _shares_visual_line(
+            bbox,
+            reference,
+            tolerance,
+            punctuation=not any(char.isalnum() for char in rects[index][0]),
+        ):
             rows.append([])
             reference = bbox
         else:
@@ -1948,7 +1958,10 @@ def _combine_rects(
         finfo = fi or {}
 
         if current_y is None or _shares_visual_line(
-            (left, bottom, right, top), (cb[0], cb[1], cb[2], cb[3]), y_tolerance
+            (left, bottom, right, top),
+            (cb[0], cb[1], cb[2], cb[3]),
+            y_tolerance,
+            punctuation=not any(char.isalnum() for char in text),
         ):
             if current_y is None:
                 current_y = yc
