@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Low baseline punctuation remains attached to adjacent body text instead of
+  being displaced by its shorter bounding box.
 - Short adjacent word fragments, including lines assembled from multiple narrow
   pieces, stay with their full-width visual line instead
   of being displaced into a false column. Separate columns remain separate.

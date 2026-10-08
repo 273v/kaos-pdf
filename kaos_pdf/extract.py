@@ -1207,6 +1207,24 @@ def _get_font_info_at(
     return info
 
 
+def _shares_visual_line(
+    bbox: tuple[float, float, float, float],
+    reference: tuple[float, float, float, float],
+    tolerance: float,
+) -> bool:
+    """Retain short baseline punctuation next to a taller text fragment."""
+    left, bottom, right, top = bbox
+    other_left, other_bottom, other_right, other_top = reference
+    if abs((top + bottom - other_top - other_bottom) / 2) <= tolerance:
+        return True
+    height, other_height = abs(top - bottom), abs(other_top - other_bottom)
+    return (
+        min(height, other_height) <= max(height, other_height) * 0.6
+        and min(top, other_top) > max(bottom, other_bottom)
+        and max(left - other_right, other_left - right, 0.0) <= 4.0
+    )
+
+
 def _get_text_rectangles(
     textpage: pdfium.PdfTextPage,
     *,
@@ -1268,7 +1286,9 @@ def _get_text_rectangles(
     for text, (left, bottom, right, top), fi in sorted_rects:
         y_center = (top + bottom) / 2
 
-        if current_y is None or abs(y_center - current_y) <= y_tolerance:
+        if current_y is None or _shares_visual_line(
+            (left, bottom, right, top), (cb[0], cb[1], cb[2], cb[3]), y_tolerance
+        ):
             if current_y is None:
                 current_y = y_center
                 cb = [left, bottom, right, top]
@@ -1453,13 +1473,19 @@ def _wide_line_fragment_indices(
         key=lambda i: (-(rects[i][1][1] + rects[i][1][3]) / 2, rects[i][1][0]),
     )
     rows: list[list[int]] = []
-    center = 0.0
+    reference: tuple[float, float, float, float] | None = None
     for index in indices:
         bbox = rects[index][1]
-        y = (bbox[1] + bbox[3]) / 2
-        if not rows or abs(y - center) > tolerance:
+        if reference is None or not _shares_visual_line(bbox, reference, tolerance):
             rows.append([])
-            center = y
+            reference = bbox
+        else:
+            reference = (
+                min(reference[0], bbox[0]),
+                min(reference[1], bbox[1]),
+                max(reference[2], bbox[2]),
+                max(reference[3], bbox[3]),
+            )
         rows[-1].append(index)
     wide: set[int] = set()
     for row in rows:
@@ -1921,7 +1947,9 @@ def _combine_rects(
         yc = (top + bottom) / 2
         finfo = fi or {}
 
-        if current_y is None or abs(yc - current_y) <= y_tolerance:
+        if current_y is None or _shares_visual_line(
+            (left, bottom, right, top), (cb[0], cb[1], cb[2], cb[3]), y_tolerance
+        ):
             if current_y is None:
                 current_y = yc
                 cb = [left, bottom, right, top]

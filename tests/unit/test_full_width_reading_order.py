@@ -103,3 +103,26 @@ def test_multiple_short_fragments_form_one_full_width_provision(
     assert (
         "Information maintained for record-keeping shall not be used for another purpose." in text
     )
+
+
+def test_low_punctuation_fragment_stays_with_its_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "punctuation.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 12)
+    prefix = "A business that knows it collects personal information from consumers"
+    pdf.drawString(72, 720, prefix)
+    pdf.drawString(72 + pdf.stringWidth(prefix, "Helvetica", 12) + 1, 720, ",")
+    pdf.drawString(
+        72, 650, "The following provision remains on its own visual line across the page."
+    )
+    pdf.drawString(72, 540, "(a)")
+    pdf.drawString(400, 540, "(b)")
+    pdf.save()
+    monkeypatch.setattr(
+        "kaos_pdf.extract._detect_char_level_columns",
+        lambda *args, **kwargs: [(72.0, 300.0), (320.0, 600.0)],
+    )
+    text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
+    assert "information from consumers," in text
