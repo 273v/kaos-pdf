@@ -135,3 +135,53 @@ def test_overlapping_short_word_requires_normal_line_tolerance() -> None:
     lower_fragment = (401.0, 715.0, 405.0, 720.0)
     assert not _shares_visual_line(lower_fragment, body, 2.0)
     assert _shares_visual_line(lower_fragment, body, 2.0, punctuation=True)
+
+
+def test_no_character_gutter_does_not_split_indented_provisions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    path = tmp_path / "indented.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 12)
+    pdf.drawString(72, 720, "(C)")
+    pdf.drawString(164, 720, "Providing a different service.")
+    pdf.drawString(72, 650, "Following subsection")
+    pdf.drawString(
+        72, 580, "The next provision contains a full width line across the page for comparison."
+    )
+    pdf.save()
+    monkeypatch.setattr("kaos_pdf.extract._detect_char_level_columns", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "kaos_content.layout.detect_columns",
+        lambda *args, **kwargs: SimpleNamespace(columns=[(72.0, 130.0), (160.0, 550.0)]),
+    )
+    text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
+    assert text.index("(C)") < text.index("Providing") < text.index("Following subsection")
+    assert text.index("Following subsection") < text.index("The next provision")
+
+
+def test_real_character_columns_keep_column_reading_order(tmp_path: Path) -> None:
+    path = tmp_path / "real-columns.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 12)
+    for i in range(12):
+        pdf.drawString(72, 720 - i * 22, f"Left paragraph {i:02d} body text")
+        pdf.drawString(350, 720 - i * 22, f"Right paragraph {i:02d} body text")
+    pdf.save()
+    text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
+    assert text.index("Left paragraph 11") < text.index("Right paragraph 00")
+
+
+def test_sparse_native_text_retains_rectangle_column_fallback(tmp_path: Path) -> None:
+    path = tmp_path / "sparse-columns.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 12)
+    pdf.drawString(72, 720, "A1")
+    pdf.drawString(72, 650, "A2")
+    pdf.drawString(400, 720, "B1")
+    pdf.drawString(400, 650, "B2")
+    pdf.save()
+    text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
+    assert text.index("A1") < text.index("A2") < text.index("B1") < text.index("B2")

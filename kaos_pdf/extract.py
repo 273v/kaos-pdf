@@ -1467,6 +1467,28 @@ def _detect_char_level_columns(
     return valid_columns
 
 
+def _has_sufficient_character_geometry(textpage: pdfium.PdfTextPage, page_width: float) -> bool:
+    """Distinguish dense native text from pages needing rectangle fallback."""
+    count = textpage.count_chars()
+    if count < 20:
+        return False
+    valid = 0
+    leftmost = page_width
+    rightmost = 0.0
+    for index in range(0, count, max(1, count // 10000)):
+        try:
+            left, _bottom, right, _top = textpage.get_charbox(index)
+        except (OSError, AttributeError, ValueError, RuntimeError):
+            continue
+        if 0 < right - left < page_width * 0.5:
+            valid += 1
+            leftmost = min(leftmost, left)
+            rightmost = max(rightmost, right)
+            if valid >= 20 and rightmost - leftmost >= 100:
+                return True
+    return False
+
+
 def _wide_line_fragment_indices(
     rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
     width_threshold: float,
@@ -1587,7 +1609,14 @@ def _get_text_rectangles_column_aware(
         textpage, page_width=page_width, min_gutter_width=min_gutter_width * 0.5
     )
 
-    # --- Tier 2: Rect-level column detection (fallback) ---
+    # Dense character geometry with no gutter indicates one text column.
+    # Narrow labels and word endings alone can fabricate rectangle columns.
+    if char_columns is None and _has_sufficient_character_geometry(textpage, page_width):
+        return _get_text_rectangles(
+            textpage, combine_fragments=combine_fragments, y_tolerance=y_tolerance
+        )
+
+    # --- Tier 2: Rect-level column detection (sparse native geometry fallback) ---
     if char_columns is None:
         narrow_widths = sorted(b.width for b in narrow_blocks)
         median_block_width = narrow_widths[len(narrow_widths) // 2] if narrow_widths else 50.0

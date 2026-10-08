@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Dense native text with no character-level gutter no longer uses narrow labels
+  and word endings to fabricate rectangle-only columns. Sparse pages retain
+  rectangle fallback; genuine character columns preserve their reading order.
 - Low baseline punctuation remains attached to adjacent body text instead of
   being displaced by its shorter bounding box.
 - Short adjacent word fragments, including lines assembled from multiple narrow
