@@ -1536,11 +1536,23 @@ def _get_text_rectangles_column_aware(
         int, list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
     ] = {i: [] for i in range(len(detected_columns))}
 
+    # PDFium can split a word into adjacent rectangles. Keep short fragments
+    # next to a full-width line with that line, rather than in a false column.
+    wide_boxes = [
+        bbox
+        for text, bbox, _fi in raw
+        if text.strip() and abs(bbox[2] - bbox[0]) >= fullwidth_threshold
+    ]
     for text, (left, bottom, right, top), fi in raw:
         if not text.strip():
             continue
         rect_width = abs(right - left)
-        if rect_width >= fullwidth_threshold:
+        joins_wide_line = combine_fragments and any(
+            abs((top + bottom - anchor_top - anchor_bottom) / 2) <= y_tolerance
+            and max(anchor_left - right, left - anchor_right, 0.0) <= y_tolerance
+            for anchor_left, anchor_bottom, anchor_right, anchor_top in wide_boxes
+        )
+        if rect_width >= fullwidth_threshold or joins_wide_line:
             fullwidth_rects.append((text, (left, bottom, right, top), fi))
         else:
             x_center = (left + right) / 2
