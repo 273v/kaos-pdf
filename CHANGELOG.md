@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Native character baselines keep words with descenders and mixed glyph heights
+  in their visual line. Bounding-box centers remain a fallback when native
+  baseline information is unavailable.
 - Dense native text with no character-level gutter no longer uses narrow labels
   and word endings to fabricate rectangle-only columns. Sparse pages retain
   rectangle fallback; genuine character columns preserve their reading order.

@@ -185,3 +185,17 @@ def test_sparse_native_text_retains_rectangle_column_fallback(tmp_path: Path) ->
     pdf.save()
     text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
     assert text.index("A1") < text.index("A2") < text.index("B1") < text.index("B2")
+
+
+def test_mixed_glyph_heights_on_one_baseline_keep_word_order(tmp_path: Path) -> None:
+    path = tmp_path / "baseline.pdf"
+    pdf = canvas.Canvas(str(path), pagesize=(612, 792))
+    pdf.setFont("Helvetica", 18)
+    prefix = "BUSINESS "
+    pdf.drawString(72, 720, prefix)
+    x = 72 + pdf.stringWidth(prefix, "Helvetica", 18)
+    pdf.setFont("Helvetica", 12)
+    pdf.drawString(x, 720, "may disclose personal information.")
+    pdf.save()
+    text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
+    assert "BUSINESS may disclose personal information." in text

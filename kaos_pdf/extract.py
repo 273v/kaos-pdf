@@ -11,6 +11,7 @@ operating on different documents from different threads is unsafe. See
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -1175,6 +1176,11 @@ def _get_font_info_at(
     if char_idx is None or not (0 <= char_idx < n_chars):
         return info
 
+    origin_x, origin_y = ctypes.c_double(), ctypes.c_double()
+    if pdfium_raw.FPDFText_GetCharOrigin(
+        raw_tp, char_idx, ctypes.byref(origin_x), ctypes.byref(origin_y)
+    ) and math.isfinite(origin_y.value):
+        info["baseline_y"] = origin_y.value
     info["font_size"] = pdfium_raw.FPDFText_GetFontSize(raw_tp, char_idx)
 
     # Extract font name and flags
@@ -1227,6 +1233,20 @@ def _shares_visual_line(
     )
 
 
+def _matches_native_line(
+    bbox: tuple[float, float, float, float],
+    reference: tuple[float, float, float, float],
+    baseline: float | None,
+    reference_baseline: float | None,
+    tolerance: float,
+    punctuation: bool,
+) -> bool:
+    """Prefer native baselines; glyph centers shift with letters and fonts."""
+    if baseline is not None and reference_baseline is not None:
+        return abs(baseline - reference_baseline) <= tolerance
+    return _shares_visual_line(bbox, reference, tolerance, punctuation=punctuation)
+
+
 def _get_text_rectangles(
     textpage: pdfium.PdfTextPage,
     *,
@@ -1261,6 +1281,7 @@ def _get_text_rectangles(
     current_texts: list[tuple[str, float]] = []
     cb: list[float] = []
     current_y: float | None = None
+    current_baseline: float | None = None
     max_font_size: float = 0.0
     line_is_bold = False
     line_is_italic = False
@@ -1281,6 +1302,7 @@ def _get_text_rectangles(
                         "is_bold": line_is_bold,
                         "is_italic": line_is_italic,
                         "font_name": line_font_name,
+                        "baseline_y": current_baseline,
                     },
                 )
             )
@@ -1288,14 +1310,17 @@ def _get_text_rectangles(
     for text, (left, bottom, right, top), fi in sorted_rects:
         y_center = (top + bottom) / 2
 
-        if current_y is None or _shares_visual_line(
+        if current_y is None or _matches_native_line(
             (left, bottom, right, top),
             (cb[0], cb[1], cb[2], cb[3]),
+            (fi or {}).get("baseline_y"),
+            current_baseline,
             y_tolerance,
             punctuation=not any(char.isalnum() for char in text),
         ):
             if current_y is None:
                 current_y = y_center
+                current_baseline = fi.get("baseline_y")
                 cb = [left, bottom, right, top]
                 max_font_size = fi.get("font_size", 0.0)
                 line_is_bold = fi.get("is_bold", False)
@@ -1320,6 +1345,7 @@ def _get_text_rectangles(
             current_texts = [(text, left)]
             cb = [left, bottom, right, top]
             current_y = y_center
+            current_baseline = fi.get("baseline_y")
             max_font_size = fi.get("font_size", 0.0)
             line_is_bold = fi.get("is_bold", False)
             line_is_italic = fi.get("is_italic", False)
@@ -1958,6 +1984,7 @@ def _combine_rects(
     current_texts: list[tuple[str, float]] = []
     cb: list[float] = []
     current_y: float | None = None
+    current_baseline: float | None = None
     max_fs: float = 0.0
     c_bold = False
     c_italic = False
@@ -1978,6 +2005,7 @@ def _combine_rects(
                         "is_bold": c_bold,
                         "is_italic": c_italic,
                         "font_name": c_font,
+                        "baseline_y": current_baseline,
                     },
                 )
             )
@@ -1986,14 +2014,17 @@ def _combine_rects(
         yc = (top + bottom) / 2
         finfo = fi or {}
 
-        if current_y is None or _shares_visual_line(
+        if current_y is None or _matches_native_line(
             (left, bottom, right, top),
             (cb[0], cb[1], cb[2], cb[3]),
+            (fi or {}).get("baseline_y"),
+            current_baseline,
             y_tolerance,
             punctuation=not any(char.isalnum() for char in text),
         ):
             if current_y is None:
                 current_y = yc
+                current_baseline = finfo.get("baseline_y")
                 cb = [left, bottom, right, top]
                 max_fs = finfo.get("font_size", 0.0)
                 c_bold = finfo.get("is_bold", False)
@@ -2015,6 +2046,7 @@ def _combine_rects(
             current_texts = [(text, left)]
             cb = [left, bottom, right, top]
             current_y = yc
+            current_baseline = finfo.get("baseline_y")
             max_fs = finfo.get("font_size", 0.0)
             c_bold = finfo.get("is_bold", False)
             c_italic = finfo.get("is_italic", False)
