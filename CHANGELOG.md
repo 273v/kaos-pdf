@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Full-width headings and provisions retain top-to-bottom reading order when
+  narrow labels trigger column detection. Interleaving previously reversed
+  these blocks in PDF text output.
+
 ## [0.1.8] — 2026-09-23
 
 ### Fixed

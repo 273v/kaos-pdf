@@ -1595,7 +1595,8 @@ def _get_text_rectangles_column_aware(
         # Find insertion point in result
         insert_at = len(result)
         for i, (_, (_, b, _, t), _) in enumerate(result):
-            if max(b, t) > fw_y:
+            # PDF Y increases upward: insert before the first lower block.
+            if max(b, t) < fw_y:
                 insert_at = i
                 break
         result.insert(insert_at, fw_rect)
