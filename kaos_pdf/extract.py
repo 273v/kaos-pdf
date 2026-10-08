@@ -11,6 +11,7 @@ operating on different documents from different threads is unsafe. See
 
 from __future__ import annotations
 
+import math
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -1175,6 +1176,11 @@ def _get_font_info_at(
     if char_idx is None or not (0 <= char_idx < n_chars):
         return info
 
+    origin_x, origin_y = ctypes.c_double(), ctypes.c_double()
+    if pdfium_raw.FPDFText_GetCharOrigin(
+        raw_tp, char_idx, ctypes.byref(origin_x), ctypes.byref(origin_y)
+    ) and math.isfinite(origin_y.value):
+        info["baseline_y"] = origin_y.value
     info["font_size"] = pdfium_raw.FPDFText_GetFontSize(raw_tp, char_idx)
 
     # Extract font name and flags
@@ -1205,6 +1211,40 @@ def _get_font_info_at(
         )
 
     return info
+
+
+def _shares_visual_line(
+    bbox: tuple[float, float, float, float],
+    reference: tuple[float, float, float, float],
+    tolerance: float,
+    punctuation: bool = False,
+) -> bool:
+    """Retain short baseline punctuation next to a taller text fragment."""
+    left, bottom, right, top = bbox
+    other_left, other_bottom, other_right, other_top = reference
+    if abs((top + bottom - other_top - other_bottom) / 2) <= tolerance:
+        return True
+    height, other_height = abs(top - bottom), abs(other_top - other_bottom)
+    return (
+        punctuation
+        and height <= other_height * 0.6
+        and min(top, other_top) > max(bottom, other_bottom)
+        and max(left - other_right, other_left - right, 0.0) <= 4.0
+    )
+
+
+def _matches_native_line(
+    bbox: tuple[float, float, float, float],
+    reference: tuple[float, float, float, float],
+    baseline: float | None,
+    reference_baseline: float | None,
+    tolerance: float,
+    punctuation: bool,
+) -> bool:
+    """Prefer native baselines; glyph centers shift with letters and fonts."""
+    if baseline is not None and reference_baseline is not None:
+        return abs(baseline - reference_baseline) <= tolerance
+    return _shares_visual_line(bbox, reference, tolerance, punctuation=punctuation)
 
 
 def _get_text_rectangles(
@@ -1241,6 +1281,7 @@ def _get_text_rectangles(
     current_texts: list[tuple[str, float]] = []
     cb: list[float] = []
     current_y: float | None = None
+    current_baseline: float | None = None
     max_font_size: float = 0.0
     line_is_bold = False
     line_is_italic = False
@@ -1261,6 +1302,7 @@ def _get_text_rectangles(
                         "is_bold": line_is_bold,
                         "is_italic": line_is_italic,
                         "font_name": line_font_name,
+                        "baseline_y": current_baseline,
                     },
                 )
             )
@@ -1268,9 +1310,17 @@ def _get_text_rectangles(
     for text, (left, bottom, right, top), fi in sorted_rects:
         y_center = (top + bottom) / 2
 
-        if current_y is None or abs(y_center - current_y) <= y_tolerance:
+        if current_y is None or _matches_native_line(
+            (left, bottom, right, top),
+            (cb[0], cb[1], cb[2], cb[3]),
+            (fi or {}).get("baseline_y"),
+            current_baseline,
+            y_tolerance,
+            punctuation=not any(char.isalnum() for char in text),
+        ):
             if current_y is None:
                 current_y = y_center
+                current_baseline = fi.get("baseline_y")
                 cb = [left, bottom, right, top]
                 max_font_size = fi.get("font_size", 0.0)
                 line_is_bold = fi.get("is_bold", False)
@@ -1295,6 +1345,7 @@ def _get_text_rectangles(
             current_texts = [(text, left)]
             cb = [left, bottom, right, top]
             current_y = y_center
+            current_baseline = fi.get("baseline_y")
             max_font_size = fi.get("font_size", 0.0)
             line_is_bold = fi.get("is_bold", False)
             line_is_italic = fi.get("is_italic", False)
@@ -1442,6 +1493,90 @@ def _detect_char_level_columns(
     return valid_columns
 
 
+def _has_sufficient_character_geometry(textpage: pdfium.PdfTextPage, page_width: float) -> bool:
+    """Distinguish dense native text from pages needing rectangle fallback."""
+    count = textpage.count_chars()
+    if count < 20:
+        return False
+    valid = 0
+    leftmost = page_width
+    rightmost = 0.0
+    for index in range(0, count, max(1, count // 10000)):
+        try:
+            left, _bottom, right, _top = textpage.get_charbox(index)
+        except (OSError, AttributeError, ValueError, RuntimeError):
+            continue
+        if 0 < right - left < page_width * 0.5:
+            valid += 1
+            leftmost = min(leftmost, left)
+            rightmost = max(rightmost, right)
+            if valid >= 20 and rightmost - leftmost >= 100:
+                return True
+    return False
+
+
+def _wide_line_fragment_indices(
+    rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+    width_threshold: float,
+    tolerance: float,
+) -> set[int]:
+    """Find wide visual lines assembled from tightly adjacent fragments."""
+
+    def vertical_key(index: int) -> tuple[float, float]:
+        bbox = rects[index][1]
+        baseline = (rects[index][2] or {}).get("baseline_y")
+        y = baseline if baseline is not None else (bbox[1] + bbox[3]) / 2
+        return -y, bbox[0]
+
+    indices = sorted(
+        (i for i, (text, _bbox, _fi) in enumerate(rects) if text.strip()),
+        key=vertical_key,
+    )
+    rows: list[list[int]] = []
+    reference: tuple[float, float, float, float] | None = None
+    reference_baseline: float | None = None
+    for index in indices:
+        bbox = rects[index][1]
+        baseline = (rects[index][2] or {}).get("baseline_y")
+        if reference is None or not _matches_native_line(
+            bbox,
+            reference,
+            baseline,
+            reference_baseline,
+            tolerance,
+            punctuation=not any(char.isalnum() for char in rects[index][0]),
+        ):
+            rows.append([])
+            reference = bbox
+            reference_baseline = baseline
+        else:
+            reference = (
+                min(reference[0], bbox[0]),
+                min(reference[1], bbox[1]),
+                max(reference[2], bbox[2]),
+                max(reference[3], bbox[3]),
+            )
+        rows[-1].append(index)
+    wide: set[int] = set()
+    for row in rows:
+        groups: list[list[int]] = []
+        right = 0.0
+        for index in sorted(row, key=lambda i: rects[i][1][0]):
+            bbox = rects[index][1]
+            if not groups or bbox[0] - right > min(4.0, tolerance * 2):
+                groups.append([])
+                right = bbox[2]
+            else:
+                right = max(right, bbox[2])
+            groups[-1].append(index)
+        for group in groups:
+            left = min(rects[i][1][0] for i in group)
+            right = max(rects[i][1][2] for i in group)
+            if right - left >= width_threshold:
+                wide.update(group)
+    return wide
+
+
 def _get_text_rectangles_column_aware(
     textpage: pdfium.PdfTextPage,
     *,
@@ -1512,7 +1647,14 @@ def _get_text_rectangles_column_aware(
         textpage, page_width=page_width, min_gutter_width=min_gutter_width * 0.5
     )
 
-    # --- Tier 2: Rect-level column detection (fallback) ---
+    # Dense character geometry with no gutter indicates one text column.
+    # Narrow labels and word endings alone can fabricate rectangle columns.
+    if char_columns is None and _has_sufficient_character_geometry(textpage, page_width):
+        return _get_text_rectangles(
+            textpage, combine_fragments=combine_fragments, y_tolerance=y_tolerance
+        )
+
+    # --- Tier 2: Rect-level column detection (sparse native geometry fallback) ---
     if char_columns is None:
         narrow_widths = sorted(b.width for b in narrow_blocks)
         median_block_width = narrow_widths[len(narrow_widths) // 2] if narrow_widths else 50.0
@@ -1536,11 +1678,17 @@ def _get_text_rectangles_column_aware(
         int, list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
     ] = {i: [] for i in range(len(detected_columns))}
 
-    for text, (left, bottom, right, top), fi in raw:
+    wide_indices = {
+        i
+        for i, (text, bbox, _fi) in enumerate(raw)
+        if text.strip() and abs(bbox[2] - bbox[0]) >= fullwidth_threshold
+    }
+    if combine_fragments:
+        wide_indices.update(_wide_line_fragment_indices(raw, fullwidth_threshold, y_tolerance))
+    for index, (text, (left, bottom, right, top), fi) in enumerate(raw):
         if not text.strip():
             continue
-        rect_width = abs(right - left)
-        if rect_width >= fullwidth_threshold:
+        if index in wide_indices:
             fullwidth_rects.append((text, (left, bottom, right, top), fi))
         else:
             x_center = (left + right) / 2
@@ -1595,7 +1743,8 @@ def _get_text_rectangles_column_aware(
         # Find insertion point in result
         insert_at = len(result)
         for i, (_, (_, b, _, t), _) in enumerate(result):
-            if max(b, t) > fw_y:
+            # PDF Y increases upward: insert before the first lower block.
+            if max(b, t) < fw_y:
                 insert_at = i
                 break
         result.insert(insert_at, fw_rect)
@@ -1847,6 +1996,7 @@ def _combine_rects(
     current_texts: list[tuple[str, float]] = []
     cb: list[float] = []
     current_y: float | None = None
+    current_baseline: float | None = None
     max_fs: float = 0.0
     c_bold = False
     c_italic = False
@@ -1867,6 +2017,7 @@ def _combine_rects(
                         "is_bold": c_bold,
                         "is_italic": c_italic,
                         "font_name": c_font,
+                        "baseline_y": current_baseline,
                     },
                 )
             )
@@ -1875,9 +2026,17 @@ def _combine_rects(
         yc = (top + bottom) / 2
         finfo = fi or {}
 
-        if current_y is None or abs(yc - current_y) <= y_tolerance:
+        if current_y is None or _matches_native_line(
+            (left, bottom, right, top),
+            (cb[0], cb[1], cb[2], cb[3]),
+            (fi or {}).get("baseline_y"),
+            current_baseline,
+            y_tolerance,
+            punctuation=not any(char.isalnum() for char in text),
+        ):
             if current_y is None:
                 current_y = yc
+                current_baseline = finfo.get("baseline_y")
                 cb = [left, bottom, right, top]
                 max_fs = finfo.get("font_size", 0.0)
                 c_bold = finfo.get("is_bold", False)
@@ -1899,6 +2058,7 @@ def _combine_rects(
             current_texts = [(text, left)]
             cb = [left, bottom, right, top]
             current_y = yc
+            current_baseline = finfo.get("baseline_y")
             max_fs = finfo.get("font_size", 0.0)
             c_bold = finfo.get("is_bold", False)
             c_italic = finfo.get("is_italic", False)

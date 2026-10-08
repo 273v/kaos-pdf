@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Native character baselines keep words with descenders and mixed glyph heights
+  in their visual line. Bounding-box centers remain a fallback when native
+  baseline information is unavailable.
+- Dense native text with no character-level gutter no longer uses narrow labels
+  and word endings to fabricate rectangle-only columns. Sparse pages retain
+  rectangle fallback; genuine character columns preserve their reading order.
+- Low baseline punctuation remains attached to adjacent body text instead of
+  being displaced by its shorter bounding box.
+- Short adjacent word fragments, including lines assembled from multiple narrow
+  pieces, stay with their full-width visual line instead
+  of being displaced into a false column. Separate columns remain separate.
+- Full-width headings and provisions retain top-to-bottom reading order when
+  narrow labels trigger column detection. Interleaving previously reversed
+  these blocks in PDF text output.
+
 ## [0.1.8] — 2026-09-23
 
 ### Fixed
