@@ -1521,22 +1521,34 @@ def _wide_line_fragment_indices(
     tolerance: float,
 ) -> set[int]:
     """Find wide visual lines assembled from tightly adjacent fragments."""
+
+    def vertical_key(index: int) -> tuple[float, float]:
+        bbox = rects[index][1]
+        baseline = (rects[index][2] or {}).get("baseline_y")
+        y = baseline if baseline is not None else (bbox[1] + bbox[3]) / 2
+        return -y, bbox[0]
+
     indices = sorted(
         (i for i, (text, _bbox, _fi) in enumerate(rects) if text.strip()),
-        key=lambda i: (-(rects[i][1][1] + rects[i][1][3]) / 2, rects[i][1][0]),
+        key=vertical_key,
     )
     rows: list[list[int]] = []
     reference: tuple[float, float, float, float] | None = None
+    reference_baseline: float | None = None
     for index in indices:
         bbox = rects[index][1]
-        if reference is None or not _shares_visual_line(
+        baseline = (rects[index][2] or {}).get("baseline_y")
+        if reference is None or not _matches_native_line(
             bbox,
             reference,
+            baseline,
+            reference_baseline,
             tolerance,
             punctuation=not any(char.isalnum() for char in rects[index][0]),
         ):
             rows.append([])
             reference = bbox
+            reference_baseline = baseline
         else:
             reference = (
                 min(reference[0], bbox[0]),

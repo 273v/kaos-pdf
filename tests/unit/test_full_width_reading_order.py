@@ -199,3 +199,13 @@ def test_mixed_glyph_heights_on_one_baseline_keep_word_order(tmp_path: Path) -> 
     pdf.save()
     text = serialize_text(parse_pdf(path, extract_tables=False, detect_headings=False))
     assert "BUSINESS may disclose personal information." in text
+
+
+def test_full_width_fragment_detection_uses_native_baselines() -> None:
+    from kaos_pdf.extract import _wide_line_fragment_indices
+
+    fragments = [
+        ("BUSINESS ", (72.0, 720.0, 140.0, 738.0), {"baseline_y": 720.0}),
+        ("may disclose", (141.0, 720.0, 310.0, 729.0), {"baseline_y": 720.0}),
+    ]
+    assert _wide_line_fragment_indices(fragments, 200.0, 2.0) == {0, 1}
