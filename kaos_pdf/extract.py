@@ -1227,24 +1227,6 @@ def _style_text(text: str, font_info: dict[str, Any] | None, url: str | None = N
     return node
 
 
-def _get_font_info_at(
-    textpage: pdfium.PdfTextPage,
-    left: float,
-    top: float,
-    bottom: float,
-) -> dict[str, Any]:
-    """Get rich font metadata at a position using char index lookup + raw API.
-
-    Returns dict with: font_size, font_name, is_bold, is_italic, flags.
-    """
-    n_chars = textpage.count_chars()
-    y_mid = (top + bottom) / 2
-    char_idx = textpage.get_index(left + 0.5, y_mid, 10, 10)
-    if char_idx is None or not (0 <= char_idx < n_chars):
-        return _font_info_for_char(textpage, None)
-    return _font_info_for_char(textpage, char_idx)
-
-
 def _font_info_for_char(textpage: pdfium.PdfTextPage, char_idx: int | None) -> dict[str, Any]:
     """Return font metadata (size, name, bold, italic, flags) for one char index."""
     import ctypes
