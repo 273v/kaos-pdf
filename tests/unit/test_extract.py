@@ -109,8 +109,10 @@ class TestSpecificDocuments:
         # text rect. With merge enabled, column-wrap fragments collapse into
         # paragraphs — line count drops sharply and the longest paragraph
         # contains text spanning multiple visual lines.
-        doc_off = extract_pdf(fda_guidance_pdf)
-        doc_on = extract_pdf(fda_guidance_pdf, merge_column_paragraphs=True)
+        doc_off = extract_pdf(fda_guidance_pdf, reading_order="geometric")
+        doc_on = extract_pdf(
+            fda_guidance_pdf, merge_column_paragraphs=True, reading_order="geometric"
+        )
         lines_off = serialize_text(doc_off).split("\n")
         lines_on = serialize_text(doc_on).split("\n")
         # Aggressive merge: at least 5x reduction in line count for this fixture.
@@ -124,6 +126,24 @@ class TestSpecificDocuments:
         assert max_on > max_off * 3, (
             f"merge produced no long paragraphs: max {max_off}c → {max_on}c"
         )
+
+    def test_fda_guidance_merge_column_paragraphs_stream_order(
+        self, fda_guidance_pdf: Path
+    ) -> None:
+        # Default reading order (PDFium stream order) on the 3-column Federal
+        # Register page: merged paragraphs follow each column and never
+        # absorb a line from the neighbouring column.
+        doc_off = extract_pdf(fda_guidance_pdf)
+        doc_on = extract_pdf(fda_guidance_pdf, merge_column_paragraphs=True)
+        lines_off = serialize_text(doc_off).split("\n")
+        lines_on = serialize_text(doc_on).split("\n")
+        assert len(lines_on) < len(lines_off) // 5
+        text_on = serialize_text(doc_on)
+        assert (
+            "Taking 11.5 percent of 21,000 yields approximately 2,400 stores run by 167 firms."
+            in text_on
+        )
+        assert max(len(line) for line in lines_on) > 2 * max(len(line) for line in lines_off)
 
     def test_court_filing_content(self, court_filing_short_pdf: Path) -> None:
         doc = extract_pdf(court_filing_short_pdf)

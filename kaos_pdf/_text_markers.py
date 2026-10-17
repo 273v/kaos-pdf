@@ -43,14 +43,19 @@ PDFIUM_HYPHEN_MARKER = "\x02"
 PDFIUM_LEGACY_HYPHEN_MARKER = "\ufffe"
 #: Unicode SOFT HYPHEN; at a line end it means the same thing as the markers.
 SOFT_HYPHEN = "\u00ad"
+#: NOT SIGN, which OCR text layers (GPO / Internet Archive scans of the
+#: Serial Set) emit for a hyphen at the end of a line. Only a line-end ``¬``
+#: whose next line continues the word is resolved; any other ``¬`` is text.
+OCR_LINE_END_HYPHEN = "\u00ac"
 
 #: Characters that, at the end of a line, mark a word broken across lines.
 LINE_END_HYPHEN_MARKERS = frozenset(
-    {PDFIUM_HYPHEN_MARKER, PDFIUM_LEGACY_HYPHEN_MARKER, SOFT_HYPHEN}
+    {PDFIUM_HYPHEN_MARKER, PDFIUM_LEGACY_HYPHEN_MARKER, SOFT_HYPHEN, OCR_LINE_END_HYPHEN}
 )
 
 #: Control glyphs PDFium returns for dot leaders (runs of them in a ToC line).
-_LEADER_CHARS = frozenset({"\x01", "\x02"})
+#: ``FPDFText_GetText`` reports the U+0002 glyph as U+FFFE, so both count.
+_LEADER_CHARS = frozenset({"\x01", "\x02", PDFIUM_LEGACY_HYPHEN_MARKER})
 #: Minimum number of leader glyphs in a run before it is treated as a leader.
 _MIN_LEADER_RUN = 2
 #: C0 controls whose meaning is whitespace; mapped to a space.
@@ -69,6 +74,9 @@ _NON_COMPOUND_HEADS = frozenset(
         "was", "were", "which", "with", "would",
     }
 )  # fmt: skip
+
+#: Markers :func:`clean_line_text` renders; ``¬`` stays as written.
+_RENDERED_MARKERS = frozenset({PDFIUM_HYPHEN_MARKER, PDFIUM_LEGACY_HYPHEN_MARKER, SOFT_HYPHEN})
 
 Rect = tuple[str, tuple[float, float, float, float], dict[str, Any] | None]
 JoinDecision = Literal["join", "hyphen"]
@@ -241,7 +249,7 @@ def clean_line_text(text: str) -> tuple[str, int]:
     Returns ``(text, dropped)`` where ``dropped`` counts the control
     characters removed without a mapping, so callers can log them.
     """
-    if not any(_is_dropped_control(c) or c in LINE_END_HYPHEN_MARKERS for c in text):
+    if not any(_is_dropped_control(c) or c in _RENDERED_MARKERS for c in text):
         return text, 0
     out: list[str] = []
     dropped = 0

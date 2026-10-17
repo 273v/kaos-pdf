@@ -50,6 +50,12 @@ OCRMode = Literal["never", "auto", "always"]
 # "disabled" = skip table detection entirely.
 TableMode = Literal["geometric", "engine", "disabled"]
 
+# ``reading_order`` parameter vocabulary: "auto" = PDFium's content-stream
+# line order when it is geometrically plausible for the page, else the
+# geometric (column-detection + top-to-bottom sort) order; "stream" = always
+# PDFium order; "geometric" = always the geometric order (pre-0.1.9 behavior).
+ReadingOrder = Literal["auto", "stream", "geometric"]
+
 logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -170,6 +176,7 @@ def extract_pdf(
     merge_column_paragraphs: bool = False,
     join_hyphenated_lines: bool = True,
     hyphen_resolver: HyphenResolver | None = None,
+    reading_order: ReadingOrder = "auto",
     ocr: OCRMode = "never",
     ocr_engine: OCREngine | None = None,
     ocr_dpi: int = 300,
@@ -240,6 +247,15 @@ def extract_pdf(
             ``resolver(left_fragment, right_word)``; return ``"join"``,
             ``"hyphen"``, or ``None`` (keep ``"-"`` and the line break).
             Ignored when ``join_hyphenated_lines`` is ``False``.
+        reading_order: Line order within a page. ``"auto"`` (default)
+            uses PDFium's text lines in content-stream order (the order
+            alea-preprocess / KL3M extraction used) when that order reads
+            plausibly top-down and column by column, and otherwise falls
+            back to ``"geometric"``. ``"stream"`` always uses PDFium's
+            order. ``"geometric"`` is the pre-0.1.9 behavior: column
+            detection plus a top-to-bottom sort, which interleaves the
+            columns of a page whose gutter goes undetected. With
+            ``combine_fragments=False`` the order is always geometric.
         ocr: OCR policy. ``"never"`` (default, safe) preserves legacy
             behavior — scanned pages emit empty paragraphs. ``"auto"``
             runs OCR on pages where native text extraction produced
@@ -330,6 +346,7 @@ def extract_pdf(
                 merge_column_paragraphs=merge_column_paragraphs,
                 join_hyphenated_lines=join_hyphenated_lines,
                 hyphen_resolver=hyphen_resolver,
+                reading_order=reading_order,
                 ocr=ocr,
                 ocr_engine=ocr_engine,
                 ocr_dpi=ocr_dpi,
@@ -617,6 +634,7 @@ def _extract_document(
     merge_column_paragraphs: bool = False,
     join_hyphenated_lines: bool = True,
     hyphen_resolver: HyphenResolver | None = None,
+    reading_order: ReadingOrder = "auto",
     ocr: OCRMode = "never",
     ocr_engine: OCREngine | None = None,
     ocr_dpi: int = 300,
@@ -686,6 +704,7 @@ def _extract_document(
                 merge_column_paragraphs=merge_column_paragraphs,
                 join_hyphenated_lines=join_hyphenated_lines,
                 hyphen_resolver=hyphen_resolver,
+                reading_order=reading_order,
             )
         finally:
             tp.close()
@@ -1218,13 +1237,19 @@ def _get_font_info_at(
 
     Returns dict with: font_size, font_name, is_bold, is_italic, flags.
     """
-    import ctypes
-
-    raw_tp = textpage.raw
     n_chars = textpage.count_chars()
     y_mid = (top + bottom) / 2
     char_idx = textpage.get_index(left + 0.5, y_mid, 10, 10)
+    if char_idx is None or not (0 <= char_idx < n_chars):
+        return _font_info_for_char(textpage, None)
+    return _font_info_for_char(textpage, char_idx)
 
+
+def _font_info_for_char(textpage: pdfium.PdfTextPage, char_idx: int | None) -> dict[str, Any]:
+    """Return font metadata (size, name, bold, italic, flags) for one char index."""
+    import ctypes
+
+    raw_tp = textpage.raw
     info: dict[str, Any] = {
         "font_size": 0.0,
         "font_name": "",
@@ -1233,7 +1258,7 @@ def _get_font_info_at(
         "flags": 0,
     }
 
-    if char_idx is None or not (0 <= char_idx < n_chars):
+    if char_idx is None:
         return info
 
     info["font_size"] = pdfium_raw.FPDFText_GetFontSize(raw_tp, char_idx)
@@ -1280,90 +1305,145 @@ def _get_text_rectangles(
     font_info is {"font_size": float, "rect_height": float} when available.
     Follows kelvin_pdf's extract_text_rectangles with combine_fragments.
     """
-    n_rects = textpage.count_rects(0, -1)
-    if n_rects == 0:
-        return []
-
-    raw_rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]] = []
-    for i in range(n_rects):
-        left, bottom, right, top = textpage.get_rect(i)
-        text = textpage.get_text_bounded(left, bottom, right, top)
-        fi = _get_font_info_at(textpage, left, top, bottom)
-        fi["rect_height"] = abs(top - bottom)
-        raw_rects.append((text, (left, bottom, right, top), fi))
+    raw_rects = _get_char_fragments(textpage)
 
     if not combine_fragments or not raw_rects:
         return [(text, bbox, fi) for text, bbox, fi in raw_rects]
 
-    # Combine fragments on same line (kelvin_pdf pattern)
-    sorted_rects = sorted(raw_rects, key=lambda r: (-r[1][3], r[1][0]))
+    return _combine_rects(list(raw_rects), y_tolerance)
 
-    combined: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]] = []
-    current_texts: list[tuple[str, float]] = []
-    cb: list[float] = []
-    current_y: float | None = None
-    max_font_size: float = 0.0
-    line_is_bold = False
-    line_is_italic = False
-    line_font_name = ""
+
+def _page_chars(raw_tp: Any, n_chars: int) -> list[str]:
+    """Return one string per PDFium char index (``FPDFText_GetUnicode``).
+
+    ``FPDFText_GetText`` is not index-aligned with the char list: it drops
+    characters whose Unicode value is 0 (unmapped glyphs) and rewrites the
+    U+0002 hyphen marker as U+FFFE, so on some pages (Census tables with
+    unmapped dashes) its offsets drift away from char indices. Reading each
+    char keeps text and boxes aligned. A UTF-16 surrogate pair becomes one
+    character at the first index and an empty string at the second; an
+    unpaired surrogate becomes U+FFFD.
+    """
+    cps = [pdfium_raw.FPDFText_GetUnicode(raw_tp, i) for i in range(n_chars)]
+    out: list[str] = []
+    i = 0
+    while i < n_chars:
+        cp = cps[i]
+        if 0xD800 <= cp <= 0xDBFF and i + 1 < n_chars and 0xDC00 <= cps[i + 1] <= 0xDFFF:
+            out.append(chr(0x10000 + ((cp - 0xD800) << 10) + (cps[i + 1] - 0xDC00)))
+            out.append("")
+            i += 2
+            continue
+        out.append("\ufffd" if 0xD800 <= cp <= 0xDFFF else chr(cp))
+        i += 1
+    return out
+
+
+def _get_char_fragments(
+    textpage: pdfium.PdfTextPage,
+) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any]]]:
+    """Split a page's characters into text fragments, each with exact text.
+
+    A fragment is a maximal run of characters from one page text object on
+    one PDFium text line (PDFium separates lines with generated CR/LF). This
+    is the same granularity as ``FPDFText_GetRect`` rectangles, but the text
+    comes from the characters' own indices instead of
+    ``FPDFText_GetBoundedText(rect)``. The bounded query returns every
+    character whose box touches the rectangle, so neighbours of adjacent or
+    overlapping rects were extracted twice (``"forward, I "`` then
+    ``" I "``, ``"h his"``, ``"fifive"``).
+
+    Returns ``(text, (left, bottom, right, top), font_info)`` tuples in
+    PDFium's character order; ``font_info["line_id"]`` numbers PDFium's text
+    lines so :func:`_combine_rects` can keep a line together even when its
+    words sit at slightly different baselines (OCR layers). Generated spaces stay in the text of the
+    fragment they follow; whitespace does not extend a fragment's box.
+    """
+    import ctypes
+
+    n_chars = textpage.count_chars()
+    if n_chars <= 0:
+        return []
+    raw_tp = textpage.raw
+    text = _page_chars(raw_tp, n_chars)
+
+    frags: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]] = []
+    chars: list[str] = []
+    box: list[float] | None = None
+    first_idx: int | None = None
+    cur_obj: int | None = None
+    line_id = 0
+    line_ref: list[float] | None = None  # box of the current line's first fragment
 
     def _flush() -> None:
-        if current_texts and len(cb) == 4:
-            sorted_t = sorted(current_texts, key=lambda x: x[1])
-            line_text = "".join(t[0] for t in sorted_t)
-            rect_height = abs(cb[3] - cb[1])
-            combined.append(
-                (
-                    line_text,
-                    (cb[0], cb[1], cb[2], cb[3]),
-                    {
-                        "font_size": max_font_size,
-                        "rect_height": rect_height,
-                        "is_bold": line_is_bold,
-                        "is_italic": line_is_italic,
-                        "font_name": line_font_name,
-                    },
-                )
-            )
+        nonlocal chars, box, first_idx, line_id, line_ref
+        if box is not None and first_idx is not None:
+            if line_ref is None:
+                line_ref = list(box)
+            elif box[1] >= line_ref[3] or box[3] <= line_ref[1]:
+                # No vertical overlap with the line so far: PDFium kept going
+                # on one text line across a visual line break.
+                line_id += 1
+                line_ref = list(box)
+            fi = _font_info_for_char(textpage, first_idx)
+            fi["rect_height"] = abs(box[3] - box[1])
+            fi["line_id"] = line_id
+            frags.append(("".join(chars), (box[0], box[1], box[2], box[3]), fi))
+        elif chars and frags:
+            # Whitespace-only run: keep it with the previous fragment.
+            t, b, f = frags[-1]
+            frags[-1] = (t + "".join(chars), b, f)
+        chars = []
+        box = None
+        first_idx = None
 
-    for text, (left, bottom, right, top), fi in sorted_rects:
-        y_center = (top + bottom) / 2
-
-        if current_y is None or abs(y_center - current_y) <= y_tolerance:
-            if current_y is None:
-                current_y = y_center
-                cb = [left, bottom, right, top]
-                max_font_size = fi.get("font_size", 0.0)
-                line_is_bold = fi.get("is_bold", False)
-                line_is_italic = fi.get("is_italic", False)
-                line_font_name = fi.get("font_name", "")
-            else:
-                cb[0] = min(cb[0], left)
-                cb[1] = min(cb[1], bottom)
-                cb[2] = max(cb[2], right)
-                cb[3] = max(cb[3], top)
-                max_font_size = max(max_font_size, fi.get("font_size", 0.0))
-                # Bold/italic: true if any fragment is bold/italic
-                if fi.get("is_bold"):
-                    line_is_bold = True
-                if fi.get("is_italic"):
-                    line_is_italic = True
-                if not line_font_name:
-                    line_font_name = fi.get("font_name", "")
-            current_texts.append((text, left))
-        else:
+    for i in range(n_chars):
+        ch = text[i]
+        if not ch:
+            continue  # second half of a surrogate pair
+        if ch in "\r\n":
             _flush()
-            current_texts = [(text, left)]
-            cb = [left, bottom, right, top]
-            current_y = y_center
-            max_font_size = fi.get("font_size", 0.0)
-            line_is_bold = fi.get("is_bold", False)
-            line_is_italic = fi.get("is_italic", False)
-            line_font_name = fi.get("font_name", "")
-
+            if ch == "\n":
+                line_id += 1
+                line_ref = None
+            continue
+        if pdfium_raw.FPDFText_IsGenerated(raw_tp, i):
+            chars.append(ch)
+            continue
+        obj = ctypes.cast(pdfium_raw.FPDFText_GetTextObject(raw_tp, i), ctypes.c_void_p).value
+        if obj != cur_obj:
+            if box is not None:
+                _flush()
+            cur_obj = obj
+        chars.append(ch)
+        if ch.isspace():
+            continue
+        if pdfium_raw.FPDFText_IsHyphen(raw_tp, i):
+            # PDFium's end-of-line hyphen: its page text continues the word
+            # without a line break, but the next characters are on the next
+            # visual line.
+            left, bottom, right, top = textpage.get_charbox(i)
+            if box is None:
+                box = [left, bottom, right, top]
+                first_idx = i
+            _flush()
+            line_id += 1
+            line_ref = None
+            cur_obj = None
+            continue
+        left, bottom, right, top = textpage.get_charbox(i)
+        if right < left or top < bottom or (right == left and top == bottom == 0):
+            continue
+        if box is None:
+            box = [left, bottom, right, top]
+            first_idx = i
+        else:
+            box[0] = min(box[0], left)
+            box[1] = min(box[1], bottom)
+            box[2] = max(box[2], right)
+            box[3] = max(box[3], top)
     _flush()
-
-    return combined
+    return frags
 
 
 def _detect_char_level_columns(
@@ -1513,8 +1593,14 @@ def _get_text_rectangles_column_aware(
     merge_column_paragraphs: bool = False,
     join_hyphenated_lines: bool = False,
     hyphen_resolver: HyphenResolver | None = None,
+    reading_order: ReadingOrder = "geometric",
 ) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
     """Extract text rectangles with column detection.
+
+    With ``reading_order`` ``"stream"`` (or ``"auto"`` when
+    :func:`_stream_order_is_plausible` accepts the page), lines come straight
+    from PDFium's text lines in content-stream order instead; see
+    :func:`_stream_lines`.
 
     Uses a two-tier approach:
     1. Character-level column detection: extracts individual character bounding
@@ -1532,6 +1618,15 @@ def _get_text_rectangles_column_aware(
     raw = _get_text_rectangles(textpage, combine_fragments=False, y_tolerance=y_tolerance)
     if not raw:
         return []
+
+    if combine_fragments and reading_order != "geometric":
+        stream = _stream_lines(raw)
+        if reading_order == "stream" or _stream_order_is_plausible(stream):
+            if join_hyphenated_lines:
+                stream = _join_hyphenated_line_rects(stream, resolver=hyphen_resolver)
+            if merge_column_paragraphs:
+                stream = _merge_column_paragraphs(stream, keep_order=True)
+            return stream
 
     # Build TextBlocks for column detection
     layout_blocks: list[LTextBlock] = []
@@ -1801,6 +1896,7 @@ def _merge_column_paragraphs(
     max_gap_ratio: float = 0.8,
     max_font_size_jump: float = 0.5,
     min_lines: int = 2,
+    keep_order: bool = False,
 ) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
     """Merge consecutive single-line rects in the same column into paragraphs.
 
@@ -1839,6 +1935,11 @@ def _merge_column_paragraphs(
             required before any merging happens. ``min_lines=2`` means at
             least one merge is attempted; raising this reduces aggressive
             merging but offers little upside.
+        keep_order: keep the input order (lines already in reading order,
+            e.g. PDFium stream order) instead of sorting top-to-bottom. A
+            line is then only merged into the previous one when it sits
+            below it and overlaps it horizontally (the next line in stream
+            order may start another column).
 
     Returns:
         New rect list with column-wrap fragments coalesced. Length ≤ input.
@@ -1846,8 +1947,11 @@ def _merge_column_paragraphs(
     if len(rects) < min_lines:
         return list(rects)
 
-    # Sort top-to-bottom (PDF coords: top is the larger Y).
-    sorted_rects = sorted(rects, key=lambda r: -max(r[1][1], r[1][3]))
+    # Sort top-to-bottom (PDF coords: top is the larger Y), unless the caller
+    # passes lines already in reading order (PDFium stream order).
+    sorted_rects = (
+        list(rects) if keep_order else sorted(rects, key=lambda r: -max(r[1][1], r[1][3]))
+    )
 
     merged: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]] = []
     cur_text: str = ""
@@ -1882,7 +1986,14 @@ def _merge_column_paragraphs(
         new_fs = (meta or {}).get("font_size", 0.0) or line_h
         font_jump = abs(new_fs - cur_fs) > max_font_size_jump
 
-        if (not prev_terminal) and (gap <= max_gap_ratio * cur_lh) and (not font_jump):
+        # In stream order the next line may sit in another column: only merge
+        # a line that is below the current one and overlaps it horizontally.
+        below = not keep_order or (
+            line_top <= cur_bottom + 0.5 * cur_lh
+            and bbox[0] < cur_bbox[2]
+            and bbox[2] > cur_bbox[0]
+        )
+        if (not prev_terminal) and (gap <= max_gap_ratio * cur_lh) and (not font_jump) and below:
             cur_text = cur_text.rstrip() + " " + text.lstrip()
             cur_bbox[0] = min(cur_bbox[0], bbox[0])
             cur_bbox[1] = min(cur_bbox[1], bbox[1])
@@ -1932,75 +2043,186 @@ def _resolve_text_markers(
     return out
 
 
+def _line_from_fragments(
+    frags: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]],
+    *,
+    order_by_x: bool,
+) -> tuple[str, tuple[float, float, float, float], dict[str, Any]]:
+    """Build one line rect (text, union bbox, line font info) from fragments."""
+    ordered = sorted(frags, key=lambda r: r[1][0]) if order_by_x else frags
+    font_name = ""
+    for _, _, f in frags:
+        if f.get("font_name"):
+            font_name = f["font_name"]
+            break
+    left = min(b[0] for _, b, _ in frags)
+    bottom = min(b[1] for _, b, _ in frags)
+    right = max(b[2] for _, b, _ in frags)
+    top = max(b[3] for _, b, _ in frags)
+    return (
+        "".join(t for t, _, _ in ordered),
+        (left, bottom, right, top),
+        {
+            "font_size": max(f.get("font_size", 0.0) for _, _, f in frags),
+            "rect_height": abs(top - bottom),
+            "is_bold": any(f.get("is_bold") for _, _, f in frags),
+            "is_italic": any(f.get("is_italic") for _, _, f in frags),
+            "font_name": font_name,
+        },
+    )
+
+
+def _stream_lines(
+    frags: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
+    """Group char fragments into PDFium text lines, kept in content-stream order.
+
+    Fragments from :func:`_get_char_fragments` arrive in PDFium's character
+    order and carry ``font_info["line_id"]``. Consecutive fragments with one
+    line id form one line; the text keeps PDFium's character order. This is
+    the order alea-preprocess / KL3M extraction used, and for well-formed
+    PDFs it is the authored reading order: column by column, without the
+    interleaving that a global top-to-bottom sort produces when column
+    detection misses a gutter.
+    """
+    lines: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]] = []
+    cur: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]] = []
+    cur_id: object = None
+    for text, bbox, fi in frags:
+        finfo = fi or {}
+        lid = finfo.get("line_id")
+        if cur and (lid is None or lid != cur_id):
+            lines.append(_line_from_fragments(cur, order_by_x=False))
+            cur = []
+        cur.append((text, bbox, finfo))
+        cur_id = lid
+    if cur:
+        lines.append(_line_from_fragments(cur, order_by_x=False))
+    return lines
+
+
+def _stream_order_is_plausible(
+    lines: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+    *,
+    max_backward_ratio: float = 0.1,
+    min_backward_allowed: int = 3,
+) -> bool:
+    """Return whether PDFium's line order reads plausibly for this page.
+
+    A step from one line to the next is *forward* when the next line starts
+    lower on the page (or on the same baseline), or moves up into a column
+    to the right (its left edge is right of the current line's centre). Any
+    other step goes back up the same column. Pages whose content stream is
+    authored out of order (text drawn bottom-up, in random blocks) have many
+    such steps and fall back to the geometric order. A few backward steps are
+    normal: running headers and page numbers are often drawn last.
+    """
+    steps = 0
+    backward = 0
+    prev: tuple[float, float, float, float] | None = None
+    for text, bbox, _fi in lines:
+        if not text.strip():
+            continue
+        left, bottom, right, top = bbox
+        if prev is not None:
+            p_left, p_bottom, p_right, p_top = prev
+            steps += 1
+            height = max(1.0, p_top - p_bottom)
+            goes_down = top <= p_top + 0.5 * height
+            new_column = left > (p_left + p_right) / 2
+            if not (goes_down or new_column):
+                backward += 1
+        prev = (left, bottom, right, top)
+    if steps == 0:
+        return True
+    return backward <= max(min_backward_allowed, max_backward_ratio * steps)
+
+
 def _combine_rects(
     rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
     y_tolerance: float = 2.0,
 ) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
-    """Combine text fragments on the same line (by Y-tolerance)."""
+    """Combine text fragments into visual lines.
+
+    Fragments that PDFium put on the same text line (same
+    ``font_info["line_id"]``, set by :func:`_get_char_fragments`) always stay
+    together: OCR text layers place words of one line at baselines a few
+    points apart, and splitting them by y alone moved words onto lines of
+    their own (``"Whereas it to this meeting"`` / ``"appears now"``). Those
+    line groups, and fragments without a line id, are then merged when their
+    vertical centres are within ``y_tolerance`` (the historical rule, which
+    also joins separate text runs drawn on one baseline). Texts in a line
+    are ordered left to right.
+    """
     if not rects:
         return []
 
-    sorted_rects = sorted(rects, key=lambda r: (-r[1][3], r[1][0]))
+    # Group by PDFium line id (fragments without one form their own group).
+    groups: list[list[tuple[str, tuple[float, float, float, float], dict[str, Any]]]] = []
+    by_line: dict[int, int] = {}
+    for text, bbox, fi in rects:
+        finfo = fi or {}
+        lid = finfo.get("line_id")
+        if isinstance(lid, int) and lid in by_line:
+            groups[by_line[lid]].append((text, bbox, finfo))
+            continue
+        if isinstance(lid, int):
+            by_line[lid] = len(groups)
+        groups.append([(text, bbox, finfo)])
+
+    def _gbox(
+        g: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]],
+    ) -> list[float]:
+        return [
+            min(b[0] for _, b, _ in g),
+            min(b[1] for _, b, _ in g),
+            max(b[2] for _, b, _ in g),
+            max(b[3] for _, b, _ in g),
+        ]
+
+    boxed = [(_gbox(g), g) for g in groups]
+    # Top-to-bottom, then left-to-right, by each group's union box.
+    boxed.sort(key=lambda bg: (-bg[0][3], bg[0][0]))
+
     combined: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]] = []
-    current_texts: list[tuple[str, float]] = []
+    cur: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]] = []
     cb: list[float] = []
     current_y: float | None = None
-    max_fs: float = 0.0
-    c_bold = False
-    c_italic = False
-    c_font = ""
 
     def _flush() -> None:
-        if current_texts and len(cb) == 4:
-            sorted_t = sorted(current_texts, key=lambda x: x[1])
-            line_text = "".join(t[0] for t in sorted_t)
-            rh = abs(cb[3] - cb[1])
-            combined.append(
-                (
-                    line_text,
-                    (cb[0], cb[1], cb[2], cb[3]),
-                    {
-                        "font_size": max_fs,
-                        "rect_height": rh,
-                        "is_bold": c_bold,
-                        "is_italic": c_italic,
-                        "font_name": c_font,
-                    },
-                )
+        if not cur:
+            return
+        ordered = sorted(cur, key=lambda r: r[1][0])
+        line_text = "".join(t for t, _, _ in ordered)
+        font_name = ""
+        for _, _, f in cur:
+            if f.get("font_name"):
+                font_name = f["font_name"]
+                break
+        combined.append(
+            (
+                line_text,
+                (cb[0], cb[1], cb[2], cb[3]),
+                {
+                    "font_size": max(f.get("font_size", 0.0) for _, _, f in cur),
+                    "rect_height": abs(cb[3] - cb[1]),
+                    "is_bold": any(f.get("is_bold") for _, _, f in cur),
+                    "is_italic": any(f.get("is_italic") for _, _, f in cur),
+                    "font_name": font_name,
+                },
             )
+        )
 
-    for text, (left, bottom, right, top), fi in sorted_rects:
-        yc = (top + bottom) / 2
-        finfo = fi or {}
-
-        if current_y is None or abs(yc - current_y) <= y_tolerance:
-            if current_y is None:
-                current_y = yc
-                cb = [left, bottom, right, top]
-                max_fs = finfo.get("font_size", 0.0)
-                c_bold = finfo.get("is_bold", False)
-                c_italic = finfo.get("is_italic", False)
-                c_font = finfo.get("font_name", "")
-            else:
-                cb[0] = min(cb[0], left)
-                cb[1] = min(cb[1], bottom)
-                cb[2] = max(cb[2], right)
-                cb[3] = max(cb[3], top)
-                max_fs = max(max_fs, finfo.get("font_size", 0.0))
-                if finfo.get("is_bold"):
-                    c_bold = True
-                if finfo.get("is_italic"):
-                    c_italic = True
-            current_texts.append((text, left))
-        else:
-            _flush()
-            current_texts = [(text, left)]
-            cb = [left, bottom, right, top]
-            current_y = yc
-            max_fs = finfo.get("font_size", 0.0)
-            c_bold = finfo.get("is_bold", False)
-            c_italic = finfo.get("is_italic", False)
-            c_font = finfo.get("font_name", "")
+    for gb, g in boxed:
+        yc = (gb[1] + gb[3]) / 2
+        if current_y is not None and abs(yc - current_y) <= y_tolerance:
+            cb = [min(cb[0], gb[0]), min(cb[1], gb[1]), max(cb[2], gb[2]), max(cb[3], gb[3])]
+            cur.extend(g)
+            continue
+        _flush()
+        cur = list(g)
+        cb = list(gb)
+        current_y = yc
 
     _flush()
     return combined

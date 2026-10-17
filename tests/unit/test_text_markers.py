@@ -106,6 +106,16 @@ class TestJoinHyphenatedLines:
         out = join_hyphenated_lines(_lines("a con\x02", "tract and an agree\x02", "ment here"))
         assert [t for t, _, _ in out] == ["a contract and an agreement here"]
 
+    def test_ocr_not_sign_line_end(self) -> None:
+        # OCR layers (Serial Set scans) write a line-end hyphen as U+00AC.
+        out = join_hyphenated_lines(_lines("the present ex\u00ac", "traordinary session"))
+        assert [t for t, _, _ in out] == ["the present extraordinary session"]
+        # Not a continuation: the sign is left exactly as written.
+        rects = _lines("if \u00ac", "P then Q")
+        out = join_hyphenated_lines(rects)
+        assert out == rects
+        assert clean_line_text("if \u00ac")[0] == "if \u00ac"
+
     def test_custom_resolver(self) -> None:
         calls: list[tuple[str, str]] = []
 

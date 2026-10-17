@@ -25,6 +25,7 @@ from kaos_pdf._version import __version__
 from kaos_pdf.errors import KaosPdfError, PdfExtractionError, PdfNotFoundError, PdfRenderError
 from kaos_pdf.extract import (
     OCRMode,
+    ReadingOrder,
     TableMode,
     classify_document,
     classify_page,
@@ -130,6 +131,7 @@ __all__ = [
     "PdfRenderError",
     "RapidOcrEngine",
     "RapidOcrNotInstalledError",
+    "ReadingOrder",
     "RenderPageTool",
     "SearchDocumentTool",
     "SearchResult",

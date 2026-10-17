@@ -31,8 +31,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged at DEBUG. `extract_page_text` applies the same rules to PDFium's
   page text.
 
+- **No more doubled glyphs.** Line text used to come from
+  `FPDFText_GetBoundedText(rect)`, which returns every character whose box
+  touches the rectangle. Neighbouring characters of adjacent or overlapping
+  text runs were therefore extracted twice: `"h his p postal"`,
+  `"forward, I I would"`, `"fifive"`. Lines are now built from PDFium's
+  per-character data (`FPDFText_GetUnicode` and the character boxes), and
+  each character is used exactly once.
+- **OCR text lines stay whole.** Words that PDFium puts on one text line now
+  stay on one line even when their baselines differ by more than
+  `y_tolerance`. OCR layers jitter word baselines by a few points, which used
+  to move words onto separate lines.
+- **Columns are no longer interleaved.** See `reading_order` below.
+- A `¬` (U+00AC) at the end of a line, which OCR text layers such as Serial
+  Set scans use for a line-end hyphen, is resolved like the PDFium marker.
+  Any other `¬` is left as written.
+
+### Changed
+
+- **Default line order is now PDFium's content-stream order when it is
+  plausible** (`reading_order="auto"`). The previous order (column detection
+  plus a top-to-bottom sort) interleaved the columns of multi-column pages
+  whose gutter it missed. `reading_order="geometric"` restores it.
+
+  Measured on 68 FDLP / CRS / Serial Set PDFs against alea-preprocess 0.1.12,
+  the extractor KL3M used. The split-word and doubled-glyph detectors are
+  dictionary heuristics:
+
+  | Metric | 0.1.8 | now | alea-preprocess |
+  |---|---|---|---|
+  | split words per 1K words | 3.42 | 0.82 | 1.06 |
+  | doubled glyphs per 1K words | 1.30 | 0.37 | 0.37 |
+  | C0 control characters per 1M chars | 47,310 | 0 | 0 |
+  | 5-gram precision against alea-preprocess | 0.69 | 0.90 | n/a |
+
+  In a blind 40-pair review, the new output was preferred in 20 pairs,
+  alea-preprocess in 9, and 11 were ties.
+
 ### Added
 
+- `reading_order: ReadingOrder = "auto"` on `extract_pdf` / `parse_pdf`. The
+  new top-level export `ReadingOrder` is
+  `Literal["auto", "stream", "geometric"]`.
 - `join_hyphenated_lines: bool = True` and
   `hyphen_resolver: HyphenResolver | None = None` keyword arguments on
   `extract_pdf` / `parse_pdf` (and, through `**kwargs`, `extract_pdf_bytes`
