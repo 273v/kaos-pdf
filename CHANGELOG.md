@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **PDFium hyphen markers and control characters no longer reach extracted
+  text.** PDFium replaces the hyphen that ends a hyphenated line with U+0002
+  (U+FFFE in older builds). kaos-pdf passed it through, so a word broken
+  across lines came out split, as in `"Repre\u0002"` + `"sentatives"`. On
+  FDLP PDFs that meant roughly 10,000 control characters per million.
+  `extract_pdf` / `parse_pdf` / `extract_pdf_bytes` now resolve the marker at
+  the line-rectangle level, before column-paragraph merging, heading,
+  header/footer and table detection:
+  - a marker-ended line whose next line continues the word is merged with
+    that line into one paragraph, and the provenance bbox is the union of the
+    two lines;
+  - the hyphen is dropped when the joined form is a dictionary word, and kept
+    for two-word compounds (`postal-service`, `day-to-day`), which PDFium
+    marks the same way;
+  - when the decision is unsure, `-` and the line break are both kept.
+
+  U+00AD at a line end gets the same treatment, and inside a word it is
+  removed. Runs of `\x01` / `\x02` dot-leader glyphs render as `.`. Every
+  other C0 control except tab, newline and carriage return is dropped and
+  logged at DEBUG. `extract_page_text` applies the same rules to PDFium's
+  page text.
+
+### Added
+
+- `join_hyphenated_lines: bool = True` and
+  `hyphen_resolver: HyphenResolver | None = None` keyword arguments on
+  `extract_pdf` / `parse_pdf` (and, through `**kwargs`, `extract_pdf_bytes`
+  and `extract_pdf_with_tables`) and on `extract_page_text`.
+  `join_hyphenated_lines=False` keeps one paragraph per line and renders
+  every marker as `-`. The new top-level exports `HyphenResolver` and
+  `hyphen_join_decision` (the default resolver) let callers plug in
+  corpus-backed decisions.
+
 ## [0.1.8] — 2026-09-23
 
 ### Fixed

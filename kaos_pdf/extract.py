@@ -25,6 +25,8 @@ from kaos_content.model.attr import BoundingBox, Provenance, SourceRef
 from kaos_content.model.document import ContentDocument
 from kaos_core.logging import get_logger
 
+from kaos_pdf._text_markers import HyphenResolver, clean_line_text, clean_page_text
+from kaos_pdf._text_markers import join_hyphenated_lines as _join_hyphenated_line_rects
 from kaos_pdf.errors import PdfExtractionError
 from kaos_pdf.model import PdfMetadata, PdfOutlineEntry
 from kaos_pdf.quality import DEFAULT_OCR_QUALITY_THRESHOLD, is_low_quality_layer
@@ -166,6 +168,8 @@ def extract_pdf(
     combine_fragments: bool = True,
     y_tolerance: float = 2.0,
     merge_column_paragraphs: bool = False,
+    join_hyphenated_lines: bool = True,
+    hyphen_resolver: HyphenResolver | None = None,
     ocr: OCRMode = "never",
     ocr_engine: OCREngine | None = None,
     ocr_dpi: int = 300,
@@ -212,6 +216,30 @@ def extract_pdf(
             (Federal Register, court reporters, GPO bulletins) where the
             line-level rects otherwise look heading-shaped to per-line
             scorers. No effect on single-column PDFs.
+        join_hyphenated_lines: When ``True`` (default), a line that PDFium
+            marks as ending in a hyphenated word break (its end-of-line
+            hyphen marker U+0002, the legacy U+FFFE, or a trailing U+00AD
+            soft hyphen) is merged with the next line when that line
+            starts with a lowercase letter: ``"Repre"`` + ``"sentatives"``
+            becomes one paragraph reading ``"Representatives"``, with the
+            union bbox as provenance. A marker followed by an
+            uppercase letter, a digit, or nothing renders as ``"-"`` and
+            the line break stays. ``False`` never merges lines and renders
+            every marker as ``"-"``. Either way no PDFium marker or other
+            C0 control character (except tab / newline / carriage return)
+            reaches the output; dot-leader glyph runs render as ``"."``.
+            PDFium marks real compound hyphens at a line end exactly like
+            word-break hyphens, so the default decision
+            (:func:`kaos_pdf.hyphen_join_decision`) drops the hyphen only
+            when the joined form is a dictionary word, keeps ``"-"`` for
+            compounds of two words (``"well-being"``, ``"day-to-day"``),
+            and when unsure keeps both ``"-"`` and the line break.
+        hyphen_resolver: Optional :data:`kaos_pdf.HyphenResolver` that
+            replaces the default join-or-hyphen decision, e.g. one backed
+            by corpus counts or a domain lexicon. Called as
+            ``resolver(left_fragment, right_word)``; return ``"join"``,
+            ``"hyphen"``, or ``None`` (keep ``"-"`` and the line break).
+            Ignored when ``join_hyphenated_lines`` is ``False``.
         ocr: OCR policy. ``"never"`` (default, safe) preserves legacy
             behavior — scanned pages emit empty paragraphs. ``"auto"``
             runs OCR on pages where native text extraction produced
@@ -300,6 +328,8 @@ def extract_pdf(
                 combine_fragments=combine_fragments,
                 y_tolerance=y_tolerance,
                 merge_column_paragraphs=merge_column_paragraphs,
+                join_hyphenated_lines=join_hyphenated_lines,
+                hyphen_resolver=hyphen_resolver,
                 ocr=ocr,
                 ocr_engine=ocr_engine,
                 ocr_dpi=ocr_dpi,
@@ -418,8 +448,20 @@ def get_pdf_metadata(source: str | Path) -> PdfMetadata:
             doc.close()
 
 
-def extract_page_text(source: str | Path, page_number: int) -> str:
-    """Extract plain text from a single page (0-based index)."""
+def extract_page_text(
+    source: str | Path,
+    page_number: int,
+    *,
+    join_hyphenated_lines: bool = True,
+    hyphen_resolver: HyphenResolver | None = None,
+) -> str:
+    """Extract plain text from a single page (0-based index).
+
+    PDFium's end-of-line hyphen markers are resolved as described for
+    :func:`extract_pdf` (``join_hyphenated_lines``, ``hyphen_resolver``), dot-leader glyph runs
+    render as ``"."``, and no C0 control character other than tab, newline,
+    or carriage return is returned.
+    """
     with _PDFIUM_LOCK:
         doc = pdfium.PdfDocument(str(source))
         try:
@@ -430,7 +472,16 @@ def extract_page_text(source: str | Path, page_number: int) -> str:
             tp = page.get_textpage()
             text = tp.get_text_bounded()
             tp.close()
-            return text
+            cleaned, dropped = clean_page_text(
+                text, join_hyphenated_lines=join_hyphenated_lines, resolver=hyphen_resolver
+            )
+            if dropped:
+                logger.debug(
+                    "dropped %d unmapped control character(s) from page %d text",
+                    dropped,
+                    page_number + 1,
+                )
+            return cleaned
         finally:
             doc.close()
 
@@ -564,6 +615,8 @@ def _extract_document(
     combine_fragments: bool = True,
     y_tolerance: float = 2.0,
     merge_column_paragraphs: bool = False,
+    join_hyphenated_lines: bool = True,
+    hyphen_resolver: HyphenResolver | None = None,
     ocr: OCRMode = "never",
     ocr_engine: OCREngine | None = None,
     ocr_dpi: int = 300,
@@ -631,9 +684,17 @@ def _extract_document(
                 combine_fragments=combine_fragments,
                 y_tolerance=y_tolerance,
                 merge_column_paragraphs=merge_column_paragraphs,
+                join_hyphenated_lines=join_hyphenated_lines,
+                hyphen_resolver=hyphen_resolver,
             )
         finally:
             tp.close()
+        rects = _resolve_text_markers(
+            rects,
+            join_hyphenated_lines=join_hyphenated_lines,
+            hyphen_resolver=hyphen_resolver,
+            page_number=page_idx + 1,
+        )
         all_page_rects.append(rects)
         # Extract link annotations for this page. Failures are silent —
         # annotation enumeration can fail on malformed PDFs without
@@ -1450,6 +1511,8 @@ def _get_text_rectangles_column_aware(
     y_tolerance: float = 2.0,
     min_gutter_width: float = 15.0,
     merge_column_paragraphs: bool = False,
+    join_hyphenated_lines: bool = False,
+    hyphen_resolver: HyphenResolver | None = None,
 ) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
     """Extract text rectangles with column detection.
 
@@ -1573,6 +1636,10 @@ def _get_text_rectangles_column_aware(
             continue
         if combine_fragments:
             line_rects = _combine_rects(rects, y_tolerance)
+            if join_hyphenated_lines:
+                # Before paragraph merging, which would put a space
+                # between the marker and the continuation.
+                line_rects = _join_hyphenated_line_rects(line_rects, resolver=hyphen_resolver)
             if merge_column_paragraphs:
                 line_rects = _merge_column_paragraphs(line_rects)
             col_outputs.append(line_rects)
@@ -1832,6 +1899,37 @@ def _merge_column_paragraphs(
 
     _flush()
     return merged
+
+
+def _resolve_text_markers(
+    rects: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+    *,
+    join_hyphenated_lines: bool,
+    hyphen_resolver: HyphenResolver | None = None,
+    page_number: int,
+) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
+    """Resolve PDFium hyphen markers and control characters in one page's lines.
+
+    ``rects`` are the page's lines in reading order. With
+    ``join_hyphenated_lines`` the marker-ended lines are merged with their
+    lowercase continuation first (this pass also catches continuations that
+    cross a column boundary); then every line is cleaned with
+    :func:`~kaos_pdf._text_markers.clean_line_text` so no marker or other C0
+    control reaches the AST. Unmapped controls are dropped and logged.
+    """
+    if join_hyphenated_lines:
+        rects = _join_hyphenated_line_rects(rects, resolver=hyphen_resolver)
+    out: list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]] = []
+    dropped = 0
+    for text, bbox, fi in rects:
+        cleaned, n = clean_line_text(text)
+        dropped += n
+        out.append((cleaned, bbox, fi))
+    if dropped:
+        logger.debug(
+            "dropped %d unmapped control character(s) from page %d text", dropped, page_number
+        )
+    return out
 
 
 def _combine_rects(
