@@ -20,10 +20,12 @@ from typing import Any as _Any
 # Re-export canonical search from kaos-content
 from kaos_content.search import SearchResult, SearchResults, search_document
 
+from kaos_pdf._text_markers import HyphenResolver, hyphen_join_decision
 from kaos_pdf._version import __version__
 from kaos_pdf.errors import KaosPdfError, PdfExtractionError, PdfNotFoundError, PdfRenderError
 from kaos_pdf.extract import (
     OCRMode,
+    ReadingOrder,
     TableMode,
     classify_document,
     classify_page,
@@ -113,6 +115,7 @@ __all__ = [
     "ExtractedTable",
     "GetOutlineTool",
     "GetPageTextTool",
+    "HyphenResolver",
     "KaosPdfError",
     "LayerQuality",
     "OCREngine",
@@ -128,6 +131,7 @@ __all__ = [
     "PdfRenderError",
     "RapidOcrEngine",
     "RapidOcrNotInstalledError",
+    "ReadingOrder",
     "RenderPageTool",
     "SearchDocumentTool",
     "SearchResult",
@@ -150,6 +154,7 @@ __all__ = [
     "get_page_count",
     "get_pdf_metadata",
     "get_pdf_outline",
+    "hyphen_join_decision",
     "is_low_quality_layer",
     "line_legibility",
     "parse_pdf",
