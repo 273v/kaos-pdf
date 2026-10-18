@@ -82,6 +82,14 @@ class TestRepeatedPageFurniture:
         assert hits[0] not in excluded
         assert hits[1] in excluded
 
+    def test_numeric_row_labels_are_not_furniture(self) -> None:
+        pages = [
+            _page("1-2", [f"Participants {i}-{j} ..... 1,404" for j in range(30)]) for i in range(3)
+        ]
+        excluded = _repeated_page_furniture(pages)
+        flat = _flat(pages)
+        assert not [i for i, t in enumerate(flat) if t == "1-2" and i in excluded]
+
     def test_single_page_returns_nothing_via_filter(self) -> None:
         pages = [_page("Header", ["body"])]
         assert _filter_headers_footers(pages) == set()

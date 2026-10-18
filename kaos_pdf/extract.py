@@ -2337,6 +2337,8 @@ def _filter_headers_footers(
 _FURNITURE_ZONE_FRACTION = 0.12
 _FURNITURE_MIN_OCCURRENCE = 0.4
 _FURNITURE_Y_TOLERANCE = 0.03
+# Repeated number-only cells ("1-2", "60+") are table row labels, not furniture.
+_FURNITURE_MIN_LETTERS = 3
 
 
 def _repeated_page_furniture(
@@ -2351,7 +2353,9 @@ def _repeated_page_furniture(
     pages (and at least two) at the same relative height, within
     ``_FURNITURE_Y_TOLERANCE``. The occurrence on the first such page is
     kept; later repeats are excluded. Text that repeats at different
-    heights (e.g. headings that share a prefix) is not furniture.
+    heights (e.g. headings that share a prefix) and text with fewer than
+    ``_FURNITURE_MIN_LETTERS`` letters (numeric row labels) are not
+    furniture.
     """
     n_pages = len(all_page_rects)
     min_pages = max(2, int(n_pages * _FURNITURE_MIN_OCCURRENCE))
@@ -2370,7 +2374,7 @@ def _repeated_page_furniture(
             idx = flat_idx
             flat_idx += 1
             normalized = text.strip().lower()
-            if not normalized or height <= 0:
+            if height <= 0 or sum(c.isalpha() for c in normalized) < _FURNITURE_MIN_LETTERS:
                 continue
             rel = ((low + high) / 2.0 - page_low) / height
             if rel < _FURNITURE_ZONE_FRACTION:
