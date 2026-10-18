@@ -20,7 +20,7 @@ import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_raw
 from kaos_content.builders.builder import DocumentBuilder
 from kaos_content.images.model import KaosImage
-from kaos_content.layout import TextBlock, detect_headers_footers
+from kaos_content.layout import TextBlock
 from kaos_content.model.attr import BoundingBox, Provenance, SourceRef
 from kaos_content.model.document import ContentDocument
 from kaos_core.logging import get_logger
@@ -2305,35 +2305,20 @@ def _filter_headers_footers(
     """Identify header/footer/watermark blocks to exclude from output.
 
     Uses two strategies:
-    1. Layout primitive: detect_headers_footers for cross-page repeated content
-    2. Pattern matching: known watermark/production artifact patterns
+    1. Cross-page repeated content at a consistent position in the
+       top/bottom zone (see :func:`_repeated_page_furniture`). The first
+       occurrence is kept: a repeated table title, column-header row,
+       station line or issue date is real content once.
+    2. Pattern matching: known production-slug patterns (see
+       :func:`_is_watermark`).
 
     Returns set of flat indices to exclude.
     """
     exclude: set[int] = set()
 
-    # Strategy 1: Cross-page repeated content via layout primitive
+    # Strategy 1: Cross-page repeated content
     if len(all_page_rects) >= 2:
-        page_blocks: list[list[TextBlock]] = []
-        for page_rects in all_page_rects:
-            blocks = []
-            for text, (left, bottom, right, top), _fi in page_rects:
-                blocks.append(
-                    TextBlock(
-                        left=left,
-                        top=min(top, bottom),
-                        right=right,
-                        bottom=max(top, bottom),
-                        text=text,
-                    )
-                )
-            page_blocks.append(blocks)
-
-        header_idxs, footer_idxs = detect_headers_footers(
-            page_blocks, zone_fraction=0.12, min_occurrence=0.4
-        )
-        exclude.update(header_idxs)
-        exclude.update(footer_idxs)
+        exclude.update(_repeated_page_furniture(all_page_rects))
 
     # Strategy 2: Pattern-based watermark/artifact detection
     flat_idx = 0
@@ -2343,6 +2328,71 @@ def _filter_headers_footers(
                 exclude.add(flat_idx)
             flat_idx += 1
 
+    return exclude
+
+
+# Cross-page furniture detection: zone height and minimum page share follow
+# the previous detect_headers_footers(zone_fraction=0.12, min_occurrence=0.4)
+# call; the y tolerance is a fraction of the page's text height.
+_FURNITURE_ZONE_FRACTION = 0.12
+_FURNITURE_MIN_OCCURRENCE = 0.4
+_FURNITURE_Y_TOLERANCE = 0.03
+
+
+def _repeated_page_furniture(
+    all_page_rects: list[
+        list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
+    ],
+) -> set[int]:
+    """Return flat indices of running headers/footers, except their first page.
+
+    A block is furniture when the same text (case-insensitive) sits in the
+    top or bottom zone of at least ``_FURNITURE_MIN_OCCURRENCE`` of the
+    pages (and at least two) at the same relative height, within
+    ``_FURNITURE_Y_TOLERANCE``. The occurrence on the first such page is
+    kept; later repeats are excluded. Text that repeats at different
+    heights (e.g. headings that share a prefix) is not furniture.
+    """
+    n_pages = len(all_page_rects)
+    min_pages = max(2, int(n_pages * _FURNITURE_MIN_OCCURRENCE))
+    # (zone, normalized text) -> [(page, flat_idx, relative y-center)]
+    occurrences: dict[tuple[str, str], list[tuple[int, int, float]]] = {}
+
+    flat_idx = 0
+    for page_no, page_rects in enumerate(all_page_rects):
+        if not page_rects:
+            continue
+        lows = [min(b[1], b[3]) for _t, b, _f in page_rects]
+        highs = [max(b[1], b[3]) for _t, b, _f in page_rects]
+        page_low, page_high = min(lows), max(highs)
+        height = page_high - page_low
+        for (text, _bbox, _fi), low, high in zip(page_rects, lows, highs, strict=True):
+            idx = flat_idx
+            flat_idx += 1
+            normalized = text.strip().lower()
+            if not normalized or height <= 0:
+                continue
+            rel = ((low + high) / 2.0 - page_low) / height
+            if rel < _FURNITURE_ZONE_FRACTION:
+                zone = "low"
+            elif rel > 1.0 - _FURNITURE_ZONE_FRACTION:
+                zone = "high"
+            else:
+                continue
+            occurrences.setdefault((zone, normalized), []).append((page_no, idx, rel))
+
+    exclude: set[int] = set()
+    for occs in occurrences.values():
+        if len({page for page, _i, _y in occs}) < min_pages:
+            continue
+        ys = sorted(y for _p, _i, y in occs)
+        anchor = ys[len(ys) // 2]
+        aligned = [o for o in occs if abs(o[2] - anchor) <= _FURNITURE_Y_TOLERANCE]
+        aligned_pages = {page for page, _i, _y in aligned}
+        if len(aligned_pages) < min_pages:
+            continue
+        first_page = min(aligned_pages)
+        exclude.update(idx for page, idx, _y in aligned if page != first_page)
     return exclude
 
 
@@ -2582,24 +2632,36 @@ def _median(vals: list[float]) -> float:
     return (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
-# Known watermark/production patterns in government documents
-_WATERMARK_PATTERNS = (
-    "dsk",
-    "prod with",
-    "verdate",
-    "jkt ",
-    "frm 0",
-    "fmt ",
-    "sfmt ",
-    "e:\\fr\\fm\\",
-    "billing code",
-)
+# Known production-slug patterns in GPO / Federal Register PDFs, e.g.
+# "VerDate Mar<15>2010 19:36 Feb 07, 2011 Jkt 223001 PO 00000 Frm 00001 Fmt 4717
+# Sfmt 4717 E:\\FR\\FM\\08FEN3.SGM" and "emcdonald on DSK2BSOYB1PROD with
+# NOTICES3". Matching is token-based: a bare substring such as "dsk" also
+# matches ordinary words ("groundskeeping"), which dropped real table rows.
+_WATERMARK_SUBSTRINGS = ("verdate", "e:\\fr\\fm\\")
+# Slug keyword followed by a number token: "Jkt 223001", "Frm 00001", ...
+_WATERMARK_NUMBERED_KEYS = frozenset({"jkt", "frm", "fmt", "sfmt"})
 
 
 def _is_watermark(text: str) -> bool:
     """Check if text is a production watermark or page furniture."""
     lower = text.strip().lower()
-    return any(pat in lower for pat in _WATERMARK_PATTERNS)
+    if any(pat in lower for pat in _WATERMARK_SUBSTRINGS):
+        return True
+    tokens = lower.split()
+    for i, tok in enumerate(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if tok in _WATERMARK_NUMBERED_KEYS and nxt[:1].isdigit():
+            return True
+        if tok == "billing" and nxt == "code":
+            after = tokens[i + 2] if i + 2 < len(tokens) else ""
+            if after[:1].isdigit():
+                return True
+        # GPO operator slug: "DSK" + alphanumeric id, usually glued to "PROD".
+        if tok.startswith("dsk") and len(tok) >= 6 and any(c.isdigit() for c in tok):
+            return True
+        if tok.endswith("prod") and nxt == "with" and len(tokens) <= 8:
+            return True
+    return False
 
 
 def _build_heading_depth_map(
