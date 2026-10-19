@@ -11,8 +11,9 @@ operating on different documents from different threads is unsafe. See
 
 from __future__ import annotations
 
+import itertools
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -184,6 +185,7 @@ def extract_pdf(
     ocr_quality_threshold: float = DEFAULT_OCR_QUALITY_THRESHOLD,
     tables: TableMode = "geometric",
     table_engine: TableEngine | None = None,
+    strip_line_numbers: bool = True,
 ) -> ContentDocument:
     """Extract a PDF file into a ContentDocument AST.
 
@@ -302,6 +304,20 @@ def extract_pdf(
             ``None`` + ``tables="engine"`` constructs the default
             pdfplumber engine lazily. Override with a custom engine
             (docling, custom ML pipeline) when needed.
+        strip_line_numbers: When ``True`` (default), a pleading-paper
+            line-number column (court filings, bills: the 1-28 numbers in
+            the left margin, one per ruled line) is left out of the text.
+            Detection is geometric and per page: a narrow, aligned column of
+            number-only fragments counting up at one line pitch, with no
+            other text crossing it. Numbered paragraphs, list labels,
+            footnote numbers and table row numbers are kept. ``False``
+            keeps the numbers.
+            Independently of this flag, running page furniture is removed:
+            repeated headers/footers, running stamps whose only change is a
+            page counter (CM/ECF ``"Case … Document … Filed … Page n of
+            m"``, bare page numbers) and repeated vertical margin text. The
+            document's ``metadata.extra["furniture_removed"]`` counts what
+            was removed, by rule.
 
     Returns:
         A ContentDocument with provenance (page numbers, bounding
@@ -354,6 +370,7 @@ def extract_pdf(
                 ocr_quality_threshold=ocr_quality_threshold,
                 tables=tables,
                 engine_tables=engine_tables,
+                strip_line_numbers=strip_line_numbers,
             )
         finally:
             doc.close()
@@ -642,6 +659,7 @@ def _extract_document(
     ocr_quality_threshold: float = DEFAULT_OCR_QUALITY_THRESHOLD,
     tables: TableMode = "geometric",
     engine_tables: list[ExtractedTable] | None = None,
+    strip_line_numbers: bool = True,
 ) -> ContentDocument:
     """Core extraction logic — shared by extract_pdf and extract_pdf_bytes.
 
@@ -685,16 +703,25 @@ def _extract_document(
     # Parallel list: per-page OCR result, or None for pages where OCR
     # didn't run. Populated by Phase 1.5 below.
     all_page_ocr: list[OCRResult | None] = []
+    line_number_pages = 0
+    line_number_fragments = 0
+    page_heights: list[float] = []
+    page_rotations: list[int] = []
     for page_idx in page_indices:
         if page_idx < 0 or page_idx >= n_pages:
             all_page_rects.append([])
             all_page_links.append([])
             all_page_images.append([])
             all_page_ocr.append(None)
+            page_heights.append(0.0)
+            page_rotations.append(0)
             continue
         page = doc[page_idx]
         page_width = page.get_width()
+        page_heights.append(page.get_height())
+        page_rotations.append(page.get_rotation())
         tp = page.get_textpage()
+        line_numbers: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]] = []
         try:
             rects = _get_text_rectangles_column_aware(
                 tp,
@@ -705,9 +732,14 @@ def _extract_document(
                 join_hyphenated_lines=join_hyphenated_lines,
                 hyphen_resolver=hyphen_resolver,
                 reading_order=reading_order,
+                strip_line_numbers=strip_line_numbers,
+                removed=line_numbers,
             )
         finally:
             tp.close()
+        if line_numbers:
+            line_number_pages += 1
+            line_number_fragments += len(line_numbers)
         rects = _resolve_text_markers(
             rects,
             join_hyphenated_lines=join_hyphenated_lines,
@@ -751,7 +783,23 @@ def _extract_document(
         )
 
     # Phase 2: Filter headers/footers (cross-page repeated content)
-    filter_indices = _filter_headers_footers(all_page_rects)
+    furniture: dict[str, int] = {}
+    filter_indices = _filter_headers_footers(
+        all_page_rects,
+        page_numbers=page_indices,
+        page_heights=page_heights,
+        page_rotations=page_rotations,
+        report=furniture,
+    )
+    # Debug record of what page furniture was removed (non-zero counts only,
+    # so documents without any keep their previous metadata).
+    removed_report = {k: v for k, v in furniture.items() if v}
+    if line_number_fragments:
+        removed_report["line_number_fragments"] = line_number_fragments
+        removed_report["line_number_pages"] = line_number_pages
+    if removed_report:
+        extra["furniture_removed"] = removed_report
+        builder.set_metadata(extra=extra)
 
     # Phase 3: Classify headings + assign adaptive depths
     heading_indices: set[int] = set()
@@ -1280,19 +1328,302 @@ def _get_text_rectangles(
     *,
     combine_fragments: bool = True,
     y_tolerance: float = 2.0,
+    strip_line_numbers: bool = False,
+    removed: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]] | None = None,
 ) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
     """Extract text rectangles from a textpage.
 
     Returns list of (text, (left, bottom, right, top), font_info).
     font_info is {"font_size": float, "rect_height": float} when available.
     Follows kelvin_pdf's extract_text_rectangles with combine_fragments.
+
+    With ``strip_line_numbers`` the fragments of a pleading-paper
+    line-number column (see :func:`_line_number_gutter`) are dropped before
+    lines are built, so a number never glues onto the text line beside it.
+    Dropped fragments are appended to ``removed`` when it is given.
     """
     raw_rects = _get_char_fragments(textpage)
+    if strip_line_numbers and raw_rects:
+        drop = _line_number_gutter(raw_rects)
+        if drop:
+            if removed is not None:
+                removed.extend(raw_rects[i] for i in sorted(drop))
+            raw_rects = [r for i, r in enumerate(raw_rects) if i not in drop]
 
     if not combine_fragments or not raw_rects:
         return [(text, bbox, fi) for text, bbox, fi in raw_rects]
 
     return _combine_rects(list(raw_rects), y_tolerance)
+
+
+# Pleading-paper line numbers (court filings, bills): a column of
+# number-only fragments in the left margin, one per ruled line, counting
+# 1, 2, 3, ... down the page at a constant pitch. Detection is per page and
+# purely geometric: the column must be narrow, aligned (left or right edge)
+# within ``_GUTTER_X_TOLERANCE``, at least ``_GUTTER_MIN_ROWS`` rows of increasing
+# values whose spacing matches one pitch per step, starting at most at
+# ``_GUTTER_MAX_FIRST_VALUE`` and spanning ``_GUTTER_MIN_SPAN_SHARE`` of the
+# page's text height, with no other text crossing its x-band over its
+# height and nearly all of the page's text in that height to its right.
+# Numbered paragraphs, list labels, footnote numbers and table row-number
+# columns fail at least one of these: their numbers share a fragment with
+# text, sit at the body's left edge where other lines start, do not keep one
+# pitch per step, or do not start near 1 and run down the page.
+_GUTTER_MIN_ROWS = 8
+_GUTTER_MAX_VALUE = 99
+_GUTTER_MAX_WIDTH = 30.0
+_GUTTER_X_TOLERANCE = 4.0
+_GUTTER_ROW_Y_TOLERANCE = 2.0
+_GUTTER_PITCH_TOLERANCE = 0.2
+_GUTTER_MIN_STEP_ONE_SHARE = 0.75
+_GUTTER_MIN_BODY_RIGHT_SHARE = 0.8
+_GUTTER_MAX_FIRST_VALUE = 3
+_GUTTER_MAX_OUTSIDE_CROSSING_SHARE = 0.15
+_GUTTER_MIN_OUTSIDE_CROSSING_ROWS = 3
+_GUTTER_MIN_SPAN_SHARE = 0.25
+
+
+def _line_number_gutter(
+    frags: Sequence[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+) -> set[int]:
+    """Return indices of one page's pleading-paper line-number fragments.
+
+    ``frags`` are the page's char fragments (:func:`_get_char_fragments`).
+    The result is empty unless a whole line-number column is found; see the
+    module constants above for the rules.
+    """
+    cands = _gutter_candidates(frags)
+    if len(cands) < _GUTTER_MIN_ROWS:
+        return set()
+    page_extent = max(max(b[1], b[3]) for _t, b, _f in frags) - min(
+        min(b[1], b[3]) for _t, b, _f in frags
+    )
+
+    # Cluster by alignment: line numbers are right-aligned ("9" / "10") or
+    # left-aligned; two numbers share a column when either edge lines up.
+    parent = list(range(len(cands)))
+
+    def _root(k: int) -> int:
+        while parent[k] != k:
+            parent[k] = parent[parent[k]]
+            k = parent[k]
+        return k
+
+    # In one dimension, linking neighbours in sorted order gives the same
+    # groups as comparing every pair, in O(n log n).
+    for edge in (2, 3):
+        order = sorted(range(len(cands)), key=lambda k: cands[k][edge])
+        for a, b in itertools.pairwise(order):
+            if cands[b][edge] - cands[a][edge] <= _GUTTER_X_TOLERANCE:
+                parent[_root(a)] = _root(b)
+    by_root: dict[int, list[tuple[tuple[int, ...], int, float, float, float]]] = {}
+    for k, c in enumerate(cands):
+        by_root.setdefault(_root(k), []).append(c)
+    clusters = list(by_root.values())
+
+    drop: set[int] = set()
+    for cluster in clusters:
+        if len(cluster) < _GUTTER_MIN_ROWS:
+            continue
+        run = _gutter_run(cluster)
+        if run is None:
+            continue
+        # Line numbers restart near 1 on every page and run down most of the
+        # sheet; a stack of one-line footnotes ("4", "5", ... "12") does not.
+        if run[0][0] > _GUTTER_MAX_FIRST_VALUE:
+            continue
+        if run[0][1] - run[-1][1] < _GUTTER_MIN_SPAN_SHARE * page_extent:
+            continue
+        garbled = _gutter_margin_extras(run, frags)
+        if garbled is not None:
+            drop.update(i for row in run for i in row[2])
+            drop.update(garbled)
+    return drop
+
+
+# Some producers draw each digit of "10" as its own text object; digits on
+# one row closer together than this share of the digit height form one
+# number (a centred "1" leaves a wide gap: "1" + "1" is 3.4 pt apart at 9.5 pt).
+_GUTTER_DIGIT_JOIN_GAP = 0.6
+
+
+def _gutter_candidates(
+    frags: Sequence[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+) -> list[tuple[tuple[int, ...], int, float, float, float]]:
+    """Number-only fragments of a page as ``(indices, value, left, right, y)``.
+
+    Adjacent single-digit pieces on one row are joined into one number; an
+    overlaid copy of the same number (a doubled glyph) joins its original.
+    """
+    # (index, digits, left, right, y-center, height)
+    pieces: list[tuple[int, str, float, float, float, float]] = []
+    for i, (text, (left, bottom, right, top), _fi) in enumerate(frags):
+        tokens = text.split()
+        # A digit piece ("0" of a split "10") or a whole, possibly doubled,
+        # number; the value range is checked once pieces are joined.
+        if not tokens or len(set(tokens)) != 1 or not (tokens[0].isascii() and tokens[0].isdigit()):
+            continue
+        lo, hi = min(left, right), max(left, right)
+        if hi > lo:
+            pieces.append((i, tokens[0], lo, hi, (bottom + top) / 2.0, abs(top - bottom)))
+    pieces.sort(key=lambda p: -p[4])
+    rows: list[list[tuple[int, str, float, float, float, float]]] = []
+    for p in pieces:
+        if rows and abs(rows[-1][0][4] - p[4]) <= _GUTTER_ROW_Y_TOLERANCE:
+            rows[-1].append(p)
+        else:
+            rows.append([p])
+
+    cands: list[tuple[tuple[int, ...], int, float, float, float]] = []
+    for row in rows:
+        row.sort(key=lambda p: p[2])
+        groups: list[tuple[list[int], str, float, float, float]] = []
+        for i, digits, lo, hi, yc, height in row:
+            if groups:
+                ids, gdigits, glo, ghi, gyc = groups[-1]
+                gap = lo - ghi
+                if gap >= -1.0 and gap <= _GUTTER_DIGIT_JOIN_GAP * height and lo > glo + 1.0:
+                    groups[-1] = ([*ids, i], gdigits + digits, glo, hi, gyc)
+                    continue
+                if digits == gdigits and lo < ghi:
+                    groups[-1] = ([*ids, i], gdigits, glo, max(ghi, hi), gyc)
+                    continue
+            groups.append(([i], digits, lo, hi, yc))
+        for ids, digits, lo, hi, yc in groups:
+            if len(digits) > 2 or digits.startswith("0"):
+                continue
+            value = int(digits)
+            if 1 <= value <= _GUTTER_MAX_VALUE and hi - lo <= _GUTTER_MAX_WIDTH:
+                cands.append((tuple(ids), value, lo, hi, yc))
+    return cands
+
+
+def _gutter_run(
+    cluster: list[tuple[tuple[int, ...], int, float, float, float]],
+) -> list[tuple[int, float, list[int], float, float]] | None:
+    """Longest constant-pitch run of increasing values in one x-cluster.
+
+    Returns rows ``(value, y_center, fragment indices, left, right)`` top to
+    bottom, or ``None`` when no run reaches ``_GUTTER_MIN_ROWS``.
+    """
+    # Rows top to bottom (PDF y grows upward); a doubled glyph at the same
+    # height with the same value joins its row.
+    rows: list[tuple[int, float, list[int], float, float]] = []
+    for idx, value, lo, hi, yc in sorted(cluster, key=lambda c: -c[4]):
+        if rows and abs(rows[-1][1] - yc) <= _GUTTER_ROW_Y_TOLERANCE and rows[-1][0] == value:
+            v, y, ids, rlo, rhi = rows[-1]
+            rows[-1] = (v, y, [*ids, *idx], min(rlo, lo), max(rhi, hi))
+        else:
+            rows.append((value, yc, list(idx), lo, hi))
+    if len(rows) < _GUTTER_MIN_ROWS:
+        return None
+
+    steps = [
+        (rows[k + 1][0] - rows[k][0], rows[k][1] - rows[k + 1][1]) for k in range(len(rows) - 1)
+    ]
+    ratios = [gap / dv for dv, gap in steps if dv >= 1 and gap > 0]
+    if not ratios:
+        return None
+    pitch = _median(ratios)
+    if pitch <= 0:
+        return None
+
+    def _ok(step: tuple[int, float]) -> bool:
+        dv, gap = step
+        return dv >= 1 and abs(gap / dv - pitch) <= _GUTTER_PITCH_TOLERANCE * pitch
+
+    best: tuple[int, int] = (0, 0)  # [start, end) row range
+    start = 0
+    for k, step in enumerate(steps):
+        if not _ok(step):
+            start = k + 1
+            continue
+        if (k + 2) - start > best[1] - best[0]:
+            best = (start, k + 2)
+    run = rows[best[0] : best[1]]
+    if len(run) < _GUTTER_MIN_ROWS:
+        return None
+    run_steps = [run[k + 1][0] - run[k][0] for k in range(len(run) - 1)]
+    if sum(1 for dv in run_steps if dv == 1) < _GUTTER_MIN_STEP_ONE_SHARE * len(run_steps):
+        return None
+    return run
+
+
+# OCR layers misread a line number now and then ("io" for "10"); a fragment
+# of at most this many characters lying inside the column's x-band is taken
+# as one of its entries.
+_GUTTER_MAX_GARBLED_CHARS = 3
+
+
+def _gutter_margin_extras(
+    run: list[tuple[int, float, list[int], float, float]],
+    frags: Sequence[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]],
+) -> set[int] | None:
+    """Check that a number run is a left-margin column rather than body text.
+
+    No other fragment may cross the run's x-band within its height, at
+    least ``_GUTTER_MIN_BODY_RIGHT_SHARE`` of the horizontal text there must
+    lie to its right (vertical sidebar text is not counted), and above or
+    below it text crossing the band may not exceed
+    ``_GUTTER_MAX_OUTSIDE_CROSSING_SHARE`` of the page's horizontal text on
+    ``_GUTTER_MIN_OUTSIDE_CROSSING_ROWS`` or more rows (one or two full-width
+    caption, stamp or footer lines are fine; running paragraphs are not).
+    Returns
+    ``None`` when the run is not a margin column, otherwise the indices of
+    short fragments lying inside the band (misread line numbers), which
+    belong to the column too.
+    """
+    band_lo = min(r[3] for r in run)
+    band_hi = max(r[4] for r in run)
+    pitch = (run[0][1] - run[-1][1]) / max(run[-1][0] - run[0][0], 1)
+    y_top = run[0][1] + pitch / 2.0
+    y_bottom = run[-1][1] - pitch / 2.0
+    run_ids = {i for r in run for i in r[2]}
+    garbled: set[int] = set()
+    right_chars = 0
+    total_chars = 0
+    page_chars = 0
+    crossing_chars = 0
+    crossing_rows: set[int] = set()
+    for i, (text, (left, bottom, right, top), _fi) in enumerate(frags):
+        stripped = text.strip()
+        if i in run_ids or not stripped:
+            continue
+        lo, hi = min(left, right), max(left, right)
+        yc = (bottom + top) / 2.0
+        horizontal = abs(top - bottom) <= 2.0 * (hi - lo)
+        if horizontal:
+            page_chars += len(stripped)
+        if not y_bottom <= yc <= y_top:
+            # Above or below the column: body lines that start at or left
+            # of it (a numbered list inside running text) mean it is not a
+            # margin; a lone full-width footer or caption line is allowed.
+            if horizontal and lo < band_hi - 0.5 and hi > band_lo + 0.5:
+                crossing_chars += len(stripped)
+                crossing_rows.add(round(yc))
+            continue
+        if lo < band_hi - 0.5 and hi > band_lo + 0.5:
+            if (
+                lo >= band_lo - 1.0
+                and hi <= band_hi + 1.0
+                and len(stripped) <= _GUTTER_MAX_GARBLED_CHARS
+            ):
+                garbled.add(i)
+                continue
+            return None  # other text crosses the column: not a margin
+        if not horizontal:
+            continue  # vertical margin text (a rotated sidebar) is not body
+        total_chars += len(stripped)
+        if lo >= band_hi - 0.5:
+            right_chars += len(stripped)
+    if total_chars and right_chars < _GUTTER_MIN_BODY_RIGHT_SHARE * total_chars:
+        return None
+    if (
+        len(crossing_rows) >= _GUTTER_MIN_OUTSIDE_CROSSING_ROWS
+        and crossing_chars > _GUTTER_MAX_OUTSIDE_CROSSING_SHARE * page_chars
+    ):
+        return None
+    return garbled
 
 
 def _page_chars(raw_tp: Any, n_chars: int) -> list[str]:
@@ -1576,8 +1907,13 @@ def _get_text_rectangles_column_aware(
     join_hyphenated_lines: bool = False,
     hyphen_resolver: HyphenResolver | None = None,
     reading_order: ReadingOrder = "geometric",
+    strip_line_numbers: bool = False,
+    removed: list[tuple[str, tuple[float, float, float, float], dict[str, Any]]] | None = None,
 ) -> list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]:
     """Extract text rectangles with column detection.
+
+    ``strip_line_numbers`` and ``removed`` are passed to
+    :func:`_get_text_rectangles` (pleading-paper line-number columns).
 
     With ``reading_order`` ``"stream"`` (or ``"auto"`` when
     :func:`_stream_order_is_plausible` accepts the page), lines come straight
@@ -1597,13 +1933,27 @@ def _get_text_rectangles_column_aware(
     from kaos_content.layout import detect_columns
 
     # Get raw uncombined rectangles
-    raw = _get_text_rectangles(textpage, combine_fragments=False, y_tolerance=y_tolerance)
-    if not raw:
+    # Layout decisions (stream-order plausibility, column detection) are
+    # made on all fragments, line numbers included, so stripping a
+    # pleading-paper line-number column only removes its numbers and never
+    # changes how the rest of the page is ordered.
+    raw_all = _get_text_rectangles(textpage, combine_fragments=False, y_tolerance=y_tolerance)
+    if not raw_all:
         return []
+    raw = raw_all
+    if strip_line_numbers:
+        drop = _line_number_gutter(raw_all)
+        if drop:
+            if removed is not None:
+                removed.extend((t, b, f or {}) for i, (t, b, f) in enumerate(raw_all) if i in drop)
+            raw = [r for i, r in enumerate(raw_all) if i not in drop]
+            if not raw:
+                return []
 
     if combine_fragments and reading_order != "geometric":
         stream = _stream_lines(raw)
-        if reading_order == "stream" or _stream_order_is_plausible(stream):
+        plausible = _stream_order_is_plausible(stream if raw is raw_all else _stream_lines(raw_all))
+        if reading_order == "stream" or plausible:
             if join_hyphenated_lines:
                 stream = _join_hyphenated_line_rects(stream, resolver=hyphen_resolver)
             if merge_column_paragraphs:
@@ -1612,7 +1962,7 @@ def _get_text_rectangles_column_aware(
 
     # Build TextBlocks for column detection
     layout_blocks: list[LTextBlock] = []
-    for text, (left, bottom, right, top), _fi in raw:
+    for text, (left, bottom, right, top), _fi in raw_all:
         if text.strip():
             layout_blocks.append(
                 LTextBlock(
@@ -1628,7 +1978,12 @@ def _get_text_rectangles_column_aware(
         return (
             raw
             if not combine_fragments
-            else _get_text_rectangles(textpage, combine_fragments=True, y_tolerance=y_tolerance)
+            else _get_text_rectangles(
+                textpage,
+                combine_fragments=True,
+                y_tolerance=y_tolerance,
+                strip_line_numbers=strip_line_numbers,
+            )
         )
 
     # --- XY-Cut++ pre-masking: separate full-width from narrow rects ---
@@ -1644,7 +1999,10 @@ def _get_text_rectangles_column_aware(
 
     if not narrow_blocks:
         return _get_text_rectangles(
-            textpage, combine_fragments=combine_fragments, y_tolerance=y_tolerance
+            textpage,
+            combine_fragments=combine_fragments,
+            y_tolerance=y_tolerance,
+            strip_line_numbers=strip_line_numbers,
         )
 
     # --- Tier 1: Character-level column detection ---
@@ -1664,7 +2022,10 @@ def _get_text_rectangles_column_aware(
 
         if len(col_result.columns) <= 1:
             return _get_text_rectangles(
-                textpage, combine_fragments=combine_fragments, y_tolerance=y_tolerance
+                textpage,
+                combine_fragments=combine_fragments,
+                y_tolerance=y_tolerance,
+                strip_line_numbers=strip_line_numbers,
             )
         detected_columns = list(col_result.columns)
     else:
@@ -2301,33 +2662,73 @@ def _filter_headers_footers(
     all_page_rects: list[
         list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
     ],
+    *,
+    page_numbers: list[int] | None = None,
+    page_heights: list[float] | None = None,
+    page_rotations: list[int] | None = None,
+    report: dict[str, int] | None = None,
 ) -> set[int]:
     """Identify header/footer/watermark blocks to exclude from output.
 
-    Uses two strategies:
+    Uses these strategies:
     1. Cross-page repeated content at a consistent position in the
        top/bottom zone (see :func:`_repeated_page_furniture`). The first
        occurrence is kept: a repeated table title, column-header row,
        station line or issue date is real content once.
-    2. Pattern matching: known production-slug patterns (see
+    2. Running stamps and page numbers whose text changes from page to page
+       only in a counter that follows the page number, e.g. the CM/ECF
+       ``"Case 1:13-cv-00133 Document 244 Filed 01/08/14 Page 2 of 141"``
+       band or a bare ``"2"`` (see :func:`_running_page_stamps`). Every
+       occurrence is excluded, the first page's included.
+    3. Court e-filing stamps in the top/bottom zone of any page, including
+       one-page filings (see :func:`_is_ecf_stamp`).
+    4. Vertical text repeated at the same place in a side margin, e.g. a
+       rotated court-name sidebar (see :func:`_vertical_margin_furniture`).
+    5. Pattern matching: known production-slug patterns (see
        :func:`_is_watermark`).
+
+    ``page_numbers`` gives each entry of ``all_page_rects`` its page index
+    (default: list position), ``page_heights`` its displayed height and
+    ``page_rotations`` its ``/Rotate`` angle, used by strategies 2 and 3
+    (default: the page's text extent, unrotated). When
+    ``report`` is given, the number of blocks each strategy excluded is
+    added under ``repeated_lines``, ``page_stamps``, ``ecf_stamps``,
+    ``vertical_margin`` and ``watermarks``.
 
     Returns set of flat indices to exclude.
     """
-    exclude: set[int] = set()
+    found: dict[str, set[int]] = {}
 
-    # Strategy 1: Cross-page repeated content
     if len(all_page_rects) >= 2:
-        exclude.update(_repeated_page_furniture(all_page_rects))
+        found["repeated_lines"] = _repeated_page_furniture(all_page_rects)
+        found["page_stamps"] = _running_page_stamps(
+            all_page_rects, page_numbers, page_heights, page_rotations
+        )
+        found["vertical_margin"] = _vertical_margin_furniture(all_page_rects)
 
-    # Strategy 2: Pattern-based watermark/artifact detection
+    found["ecf_stamps"] = {
+        idx
+        for idx, _page, _zone, _rel, text in _edge_zone_blocks(
+            all_page_rects, page_heights, page_rotations
+        )
+        if _is_ecf_stamp(text)
+    }
+
+    watermarks: set[int] = set()
     flat_idx = 0
     for page_rects in all_page_rects:
         for text, _bbox, _fi in page_rects:
             if _is_watermark(text):
-                exclude.add(flat_idx)
+                watermarks.add(flat_idx)
             flat_idx += 1
+    found["watermarks"] = watermarks
 
+    exclude: set[int] = set()
+    for name, indices in found.items():
+        if report is not None:
+            # Count each block once, under the first strategy that took it.
+            report[name] = report.get(name, 0) + len(indices - exclude)
+        exclude.update(indices)
     return exclude
 
 
@@ -2397,6 +2798,270 @@ def _repeated_page_furniture(
             continue
         first_page = min(aligned_pages)
         exclude.update(idx for page, idx, _y in aligned if page != first_page)
+    return exclude
+
+
+def _edge_zone_blocks(
+    all_page_rects: list[
+        list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
+    ],
+    page_heights: list[float] | None = None,
+    page_rotations: list[int] | None = None,
+) -> list[tuple[int, int, str, float, str]]:
+    """Blocks in a page's top or bottom zone.
+
+    Returns ``(flat index, page position, zone, relative y-center, text)``
+    for every non-empty block whose center lies in the top or bottom
+    ``_FURNITURE_ZONE_FRACTION`` of the page. With ``page_heights`` (the
+    displayed page height) the zone is measured on the physical page (court
+    e-filing stamps sit at a fixed place on the sheet, and on a scanned
+    exhibit the stamp is the page's only text); otherwise on the page's
+    text extent. On a page displayed with a 90 or 270 degree
+    ``page_rotations`` entry the displayed vertical is the x axis of the
+    text coordinates, so the zone is measured along x there.
+    """
+    out: list[tuple[int, int, str, float, str]] = []
+    flat_idx = 0
+    for page_no, page_rects in enumerate(all_page_rects):
+        if not page_rects:
+            continue
+        sideways = (
+            page_rotations is not None
+            and page_no < len(page_rotations)
+            and page_rotations[page_no] % 180 == 90
+        )
+        axis = (0, 2) if sideways else (1, 3)
+        lows = [min(b[axis[0]], b[axis[1]]) for _t, b, _f in page_rects]
+        highs = [max(b[axis[0]], b[axis[1]]) for _t, b, _f in page_rects]
+        page_low, page_high = min(lows), max(highs)
+        if page_heights is not None and page_no < len(page_heights) and page_heights[page_no] > 0:
+            page_low, page_high = 0.0, page_heights[page_no]
+        height = page_high - page_low
+        for (text, _bbox, _fi), low, high in zip(page_rects, lows, highs, strict=True):
+            idx = flat_idx
+            flat_idx += 1
+            if height <= 0 or not text.strip():
+                continue
+            rel = ((low + high) / 2.0 - page_low) / height
+            if rel < _FURNITURE_ZONE_FRACTION:
+                out.append((idx, page_no, "low", rel, text))
+            elif rel > 1.0 - _FURNITURE_ZONE_FRACTION:
+                out.append((idx, page_no, "high", rel, text))
+    return out
+
+
+def _digit_key(text: str) -> tuple[str, tuple[int, ...]]:
+    """Split a block's text into a digit-free key and its ASCII digit runs.
+
+    ``"Page 2 of 141"`` gives ``("page # of #", (2, 141))``. The key is a
+    comparison key only; the text itself is never rewritten.
+    """
+    parts: list[str] = []
+    runs: list[int] = []
+    for is_digit, group in itertools.groupby(
+        " ".join(text.lower().split()), key=lambda c: c.isascii() and c.isdigit()
+    ):
+        chunk = "".join(group)
+        if is_digit:
+            parts.append("#")
+            runs.append(int(chunk))
+        else:
+            parts.append(chunk)
+    return "".join(parts), tuple(runs)
+
+
+def _running_page_stamps(
+    all_page_rects: list[
+        list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
+    ],
+    page_numbers: list[int] | None = None,
+    page_heights: list[float] | None = None,
+    page_rotations: list[int] | None = None,
+) -> set[int]:
+    """Return flat indices of running stamps and page numbers.
+
+    Blocks in the top or bottom zone are grouped by their text with digit
+    runs masked (:func:`_digit_key`) and aligned at one relative height as
+    in :func:`_repeated_page_furniture`. A group whose texts differ is a
+    running stamp when one digit run moves in step with the page number
+    (same offset from the page index) on at least
+    ``_FURNITURE_MIN_OCCURRENCE`` of the pages (and at least two): the
+    CM/ECF ``"Page 2 of 141"`` band, ``"2 of 76"``, ``"-2-"`` or a bare
+    ``"2"``. All of those occurrences are excluded. Numbered table rows or
+    captions that repeat at the page edge do not advance by exactly one per
+    page and are left alone. A group found on only two pages must also sit
+    on adjacent pages and read like a counter (:func:`_counter_like`).
+    """
+    n_pages = len(all_page_rects)
+    min_pages = max(2, int(n_pages * _FURNITURE_MIN_OCCURRENCE))
+    pages = (
+        page_numbers
+        if page_numbers is not None and len(page_numbers) == n_pages
+        else list(range(n_pages))
+    )
+    # (zone, key) -> [(page, flat_idx, relative y, normalized text, digit runs)]
+    occurrences: dict[tuple[str, str], list[tuple[int, int, float, str, tuple[int, ...]]]] = {}
+    for idx, page_no, zone, rel, text in _edge_zone_blocks(
+        all_page_rects, page_heights, page_rotations
+    ):
+        key, runs = _digit_key(text)
+        if not runs:
+            continue
+        normalized = " ".join(text.lower().split())
+        occurrences.setdefault((zone, key), []).append((pages[page_no], idx, rel, normalized, runs))
+
+    exclude: set[int] = set()
+    for occs in occurrences.values():
+        if len({o[0] for o in occs}) < min_pages:
+            continue
+        # Several stamps can share a key ("2 of 76" and "2 of 74"), so take
+        # the best page-tracking, aligned subset and repeat on the rest.
+        remaining = list(occs)
+        while True:
+            best = _best_page_tracking_subset(remaining)
+            n_best = len({o[0] for o in best})
+            if n_best < min_pages:
+                break
+            if n_best < _STAMP_MIN_PAGES_ANY_TEXT:
+                best_pages = sorted({o[0] for o in best})
+                adjacent = best_pages[-1] - best_pages[0] == len(best_pages) - 1
+                if not adjacent or not all(_counter_like(o[3]) for o in best):
+                    break
+            exclude.update(o[1] for o in best)
+            taken = {o[1] for o in best}
+            remaining = [o for o in remaining if o[1] not in taken]
+    return exclude
+
+
+# Two pages are thin evidence: there a page-tracking group must sit on
+# adjacent pages and read like a page counter ("2", "- 2 -", "2 of 76",
+# "Page 2", "Pg 2 of 37 Pg ID 2050", an e-filing stamp), so footnotes 2 and 4
+# at the foot of pages 2 and 4 stay; from three pages on any text qualifies.
+_STAMP_MIN_PAGES_ANY_TEXT = 3
+_COUNTER_MAX_TOKENS = 3
+_COUNTER_PAGE_WORDS = frozenset({"page", "pg", "p", "pp", "pageid"})
+
+
+def _counter_like(text: str) -> bool:
+    """Whether a block reads like a page counter or a filing stamp."""
+    tokens = [t.strip(".:#,-") for t in text.lower().split()]
+    if len(tokens) <= _COUNTER_MAX_TOKENS:
+        return True
+    return any(t in _COUNTER_PAGE_WORDS for t in tokens) or _is_ecf_stamp(text)
+
+
+def _best_page_tracking_subset(
+    occs: list[tuple[int, int, float, str, tuple[int, ...]]],
+) -> list[tuple[int, int, float, str, tuple[int, ...]]]:
+    """Largest set of occurrences at one height whose digit run tracks the page.
+
+    ``occs`` are ``(page, flat_idx, relative y, text, digit runs)`` sharing
+    one digit-masked key. For each digit-run position the occurrences are
+    grouped by ``run value - page``; within a group the ones within
+    ``_FURNITURE_Y_TOLERANCE`` of its median height count. Returns the
+    group covering the most pages (empty when ``occs`` is empty).
+    """
+    best: list[tuple[int, int, float, str, tuple[int, ...]]] = []
+    if not occs:
+        return best
+    for j in range(len(occs[0][4])):
+        by_offset: dict[int, list[tuple[int, int, float, str, tuple[int, ...]]]] = {}
+        for o in occs:
+            by_offset.setdefault(o[4][j] - o[0], []).append(o)
+        for group in by_offset.values():
+            ys = sorted(o[2] for o in group)
+            anchor = ys[len(ys) // 2]
+            aligned = [o for o in group if abs(o[2] - anchor) <= _FURNITURE_Y_TOLERANCE]
+            if len({o[0] for o in aligned}) > len({o[0] for o in best}):
+                best = aligned
+    return best
+
+
+# CM/ECF and appellate e-filing stamps: "Case 1:13-cv-00133 Document 244
+# Filed 01/08/14 Page 2 of 141", "Case 20-10250-btb Doc 13 Entered 02/05/20
+# Page 2 of 90", "Case: 18-17274, 12/07/2018, ID: 11114605, DktEntry: 10-1,
+# Page 2 of 65". Token-based like :func:`_is_watermark`, and only applied to
+# whole blocks in a page's top or bottom zone.
+_ECF_FILING_TOKENS = frozenset({"document", "doc", "dktentry", "filed", "entered"})
+_ECF_MAX_CHARS = 300
+
+
+def _is_ecf_stamp(text: str) -> bool:
+    """Whether a block is a court e-filing header stamp."""
+    if len(text) > _ECF_MAX_CHARS:
+        return False
+    tokens = [t.strip(":,;.()#") for t in text.lower().split()]
+    has_case = has_page = False
+    for i, tok in enumerate(tokens):
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if tok == "case" and any(c.isdigit() for c in nxt):
+            has_case = True
+        elif tok == "page" and nxt[:1].isdigit():
+            has_page = True
+    if not has_case:
+        return False
+    if has_page:
+        return any(t in _ECF_FILING_TOKENS for t in tokens)
+    # Bankruptcy stamps may carry no page counter: "Case 05-41406 Doc 8-1
+    # Filed 10/30/05 Entered 10/30/05 10:27:08 Desc Schedule ...".
+    return {"doc", "filed", "entered"} <= set(tokens)
+
+
+# Vertical text in a side margin (a rotated court-name sidebar, a
+# "Downloaded from" strip): taller than wide by this factor and at least this
+# tall, repeated with the same text within this many points of one position.
+_VERTICAL_MIN_ASPECT = 3.0
+_VERTICAL_MIN_HEIGHT = 40.0
+_VERTICAL_POSITION_TOLERANCE = 3.0
+
+
+def _vertical_margin_furniture(
+    all_page_rects: list[
+        list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
+    ],
+) -> set[int]:
+    """Return flat indices of vertical text repeated at one place on many pages.
+
+    All occurrences are excluded: running vertical text is never part of the
+    body flow, and keeping one would drop it mid-sentence on its first page.
+    """
+    n_pages = len(all_page_rects)
+    min_pages = max(2, int(n_pages * _FURNITURE_MIN_OCCURRENCE))
+    # normalized text -> [(page, flat_idx, left, bottom)]
+    occurrences: dict[str, list[tuple[int, int, float, float]]] = {}
+    flat_idx = 0
+    for page_no, page_rects in enumerate(all_page_rects):
+        for text, (left, bottom, right, top), _fi in page_rects:
+            idx = flat_idx
+            flat_idx += 1
+            width = abs(right - left)
+            height = abs(top - bottom)
+            normalized = " ".join(text.lower().split())
+            if (
+                height < _VERTICAL_MIN_HEIGHT
+                or height < _VERTICAL_MIN_ASPECT * width
+                or sum(c.isalpha() for c in normalized) < _FURNITURE_MIN_LETTERS
+            ):
+                continue
+            occurrences.setdefault(normalized, []).append(
+                (page_no, idx, min(left, right), min(bottom, top))
+            )
+
+    exclude: set[int] = set()
+    for occs in occurrences.values():
+        if len({o[0] for o in occs}) < min_pages:
+            continue
+        xs = sorted(o[2] for o in occs)
+        ys = sorted(o[3] for o in occs)
+        ax, ay = xs[len(xs) // 2], ys[len(ys) // 2]
+        aligned = [
+            o
+            for o in occs
+            if abs(o[2] - ax) <= _VERTICAL_POSITION_TOLERANCE
+            and abs(o[3] - ay) <= _VERTICAL_POSITION_TOLERANCE
+        ]
+        if len({o[0] for o in aligned}) >= min_pages:
+            exclude.update(o[1] for o in aligned)
     return exclude
 
 

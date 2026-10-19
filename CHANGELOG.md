@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Court filings no longer carry pleading line numbers or e-filing stamps
+  into the text.** RECAP / PACER PDFs on pleading paper came out with the
+  1-28 line-number column as number-only lines or glued onto the text line
+  beside it (`"5IT IS SO ORDERED."`), and with the CM/ECF band
+  `"Case 3:13-cv-00133 Document 244 Filed 01/08/14 Page 2 of 141"` on every
+  page, because the running-header rule needed identical text and skipped
+  blocks with fewer than three letters. Detection is geometric; no extracted
+  text is rewritten:
+  - a line-number column is a narrow, aligned column of number-only
+    fragments in the left margin counting up from 1-3 at one line pitch over
+    at least a quarter of the page, with no other text crossing it. Its
+    fragments are dropped before lines are built, and page layout decisions
+    (stream order, columns) are still made with them in place, so the rest of
+    the page reads as before. Numbered paragraphs, list labels, footnote
+    numbers and table row numbers are kept. Digits drawn one per text object
+    (`"1"` + `"0"`) and OCR-misread entries inside the column are handled;
+  - a top/bottom block whose text changes from page to page only in a counter
+    that follows the page number (CM/ECF and appellate stamps, `"2 of 76"`,
+    `"- 2 -"`, bare page numbers, `"Notices 38902"` running heads) is removed
+    on every page, the first included. On two-page documents the text must
+    read like a counter;
+  - CM/ECF, bankruptcy and appellate filing stamps in the top/bottom zone are
+    removed on any page, including one-page filings; zones are measured on
+    the physical page and follow `/Rotate`, so the stamp on a scanned or
+    rotated exhibit page is caught too;
+  - vertical text repeated at one place in a side margin (a rotated
+    court-name or law-firm sidebar) is removed.
+
+  On a 349-document RECAP sample, ascending line-number residue fell from
+  27,686 to 74 steps and stamp lines from 3,707 to 2, with no change in CPU
+  time per page.
+
 - **PDFium hyphen markers and control characters no longer reach extracted
   text.** PDFium replaces the hyphen that ends a hyphenated line with U+0002
   (U+FFFE in older builds). kaos-pdf passed it through, so a word broken
@@ -69,6 +101,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   alea-preprocess in 9, and 11 were ties.
 
 ### Added
+
+- `parse_pdf` / `extract_pdf` / `parse_pdf_bytes` accept
+  `strip_line_numbers` (default `True`) to keep pleading-paper line numbers
+  when set to `False`. `metadata.extra["furniture_removed"]` reports how many
+  blocks each page-furniture rule removed (`line_number_fragments`,
+  `line_number_pages`, `page_stamps`, `ecf_stamps`, `vertical_margin`,
+  `repeated_lines`, `watermarks`); the key is absent when nothing was removed.
 
 - `reading_order: ReadingOrder = "auto"` on `extract_pdf` / `parse_pdf`. The
   new top-level export `ReadingOrder` is
