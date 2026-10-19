@@ -5,7 +5,7 @@ Per the monorepo fixture provenance policy
 every fixture in this directory must answer: where did this file come from,
 what is its license, when did we retrieve it, and what is its content hash.
 
-All 17 fixtures tracked here are **public-domain U.S. government work product**
+All 18 fixtures tracked here are **public-domain U.S. government work product**
 (17 USC §105) or **non-precedential state court orders** released through public
 filing systems, with one **intentionally malformed PDF** for negative-path
 testing. None of these files originated from a customer engagement; none are
@@ -34,6 +34,7 @@ working trees.
 | `kl3m_dot_attachment.pdf` | Public comment attached to U.S. DOT Docket OST-2008-0299 ("Essential Air Service at El Centro/Imperial, California") — letter from the City of Imperial, CA City Council dated 2010-11-04. Filed publicly on regulations.gov / DOT docket. | public-domain (public docket filing) | 2026-03-27 | `a522cccdd368ceaf4a0d33943a724a0ea4054938d73562a5c0cbaa088a34f5a0` | 1 page, OCR-scanned letter on city letterhead. |
 | `kl3m_fda_guidance.pdf` | *Federal Register* Vol. 76, No. 20 (Monday, January 31, 2011) — FDA notice on Affordable Care Act §4205 vending-machine operator registration estimate (page 5386). Producer: "Federal Digital System, U. S. Government Printing Office". | public-domain (17 USC §105) | 2026-03-27 | `83299311310f37608a1fe5f0518424558e0d3faf3987121f9db4de342724c216` | 2 pages, GovInfo (FDsys) export. |
 | `ornamental_plaster.pdf` | National Park Service, *Preservation Briefs* — "Preserving Historic Ornamental Plaster" by David Flaharty. U.S. Department of the Interior, Cultural Resources / Heritage Preservation Services. | public-domain (17 USC §105) | 2026-03-28 | `333e6ed239f20a51a59e464a1fe5329ee2cd7380399d80fdb23dcf10c08ccdb3` | 14 pages, 10 MB — heavily-imaged scanned brief; used for image-extraction tests. |
+| `recap_casd_pleading_order.pdf` | U.S. District Court for the Southern District of California, *Dixon v. Hernandez*, No. 3:07-cv-01990-JM-AJB, Order dismissing duplicative habeas petition (ECF No. 4, filed 2007-11-02). Federal court order on pleading paper with the CM/ECF header stamp, from the RECAP archive (CourtListener, `gov.uscourts.casd.256816.4.0.pdf`) via the KL3M raw PDF corpus. | public-domain (17 USC §105; federal court order, public docket) | 2026-10-18 | `7a55882f760ff6bf5d80416aa2f73d5c298634ff9e34ef0e923f13877fd9f0fb` | 2 pages, native text. Pleading line numbers 1-28 drawn as separate text objects, some sharing a PDFium line with body text; CM/ECF stamp on each page. Drives `tests/unit/test_pleading_furniture.py`. |
 | `staten_v_united_states.pdf` | *Staten v. United States*, No. 15-308C (Fed. Cl. July 17, 2015) — U.S. Court of Federal Claims order on motion to dismiss. Not-for-publication order from a federal court of record. | public-domain (17 USC §105) | 2026-03-28 | `a627b0fcfab942b97e90aae4f95f3392448fcfde9ed4a914dffd45efaaca8d40` | 7 pages, scanned via Canon device. |
 | `test1.pdf` | *Federal Register* notice page (Proposed Rules header). Producer: "iText® Core 7.2.3 ... Government Publishing Office", Creator: "govinfo, U. S. Government Publishing Office", CreationDate 2024-08-24. GovInfo export. Inherited from `kelvin_pdf/tests/resources/test1.pdf`. | public-domain (17 USC §105) | 2026-03-27 | `a3d0bb7439edf4ef452263451e81328221937186bfa7b725c7b64fd38270d7b4` | 1 page, native text. |
 | `test2.pdf` | Public Law 92-500, Oct. 18, 1972 — Federal Water Pollution Control Act Amendments of 1972 (Clean Water Act enactment), 86 Stat. 816 et seq. Statutes-at-Large excerpt. Inherited from `kelvin_pdf/tests/resources/test2.pdf`. | public-domain (17 USC §105) | 2026-03-27 | `8a692403d29fa72cb27e68a082943363778ff66c91b4adc2a086c0d73438c20e` | 1 page. |
@@ -45,8 +46,8 @@ working trees.
 
 ## Confirmed-source vs. best-guess count
 
-- Confirmed source: **16 / 17**
-- Best-guess (specific upstream URL not recoverable): **1 / 17** (`test3.pdf` — anonymous 2009-vintage public scan inherited from `kelvin_pdf`; documented under fair-use for OCR-path parser-regression testing)
+- Confirmed source: **17 / 18**
+- Best-guess (specific upstream URL not recoverable): **1 / 18** (`test3.pdf` — anonymous 2009-vintage public scan inherited from `kelvin_pdf`; documented under fair-use for OCR-path parser-regression testing)
 
 ## Audit confirmations
 
