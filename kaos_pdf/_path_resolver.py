@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 from kaos_core.path_resolver import resolve_input_path
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator
 
     from kaos_core.base.context import KaosContext
     from kaos_core.path_resolver import ResolvedInput
@@ -57,7 +57,7 @@ _PDF_MIMES: tuple[str, ...] = ("application/pdf",)
 async def resolve_pdf_input(
     path_or_uri: str,
     context: KaosContext | None,
-) -> AsyncIterator[ResolvedInput]:
+) -> AsyncGenerator[ResolvedInput]:
     """Resolve a PDF file/URI input to a real ``pathlib.Path``.
 
     Wraps :func:`kaos_core.path_resolver.resolve_input_path` with a
