@@ -924,11 +924,17 @@ def _extract_document(
 
             left, bottom, right, top = bbox
             # PDF coords are bottom-left origin (top has the larger y), but
-            # BoundingBox defaults to top-left where bottom >= top is the
-            # invariant. Normalize via min/max so the validator accepts the
-            # box regardless of which y-value pypdfium2 returned as "top".
-            bb_top = min(top, bottom)
-            bb_bottom = max(top, bottom)
+            # BoundingBox is labelled top-left (y grows downward). Convert with
+            # the page height so the box matches its label: lines further down
+            # the page get larger ``top`` values, as OCR boxes already do.
+            # Without a known page height, fall back to min/max (valid but
+            # still PDF y-values).
+            y_low, y_high = min(top, bottom), max(top, bottom)
+            page_h = page_heights[i] if i < len(page_heights) else 0.0
+            if page_h > 0:
+                bb_top, bb_bottom = page_h - y_high, page_h - y_low
+            else:
+                bb_top, bb_bottom = y_low, y_high
             bb = BoundingBox(left=left, top=bb_top, right=right, bottom=bb_bottom)
 
             # Check if this block is part of a table
