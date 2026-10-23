@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **OCRed pages now lose page furniture too.** The header / footer,
+  running-stamp, CM/ECF edge-zone, vertical-margin and watermark rules ran
+  only on native text rects, so a scanned court filing OCRed with
+  `ocr="always"` (or `"auto"`) kept its `"Case 1:13-cv-00133 Document 244
+  Filed 01/08/14 Page 2 of 4"` band and bare page numbers on every page.
+  OCR lines are now mapped to displayed-page points (rendered image size
+  and `ocr_dpi`, recorded in `OCRResult.extra`) and filtered together with
+  the native pages of the same document; filtered OCR lines are not
+  emitted. Documents without OCR pages take the unchanged code path.
+  Detection is geometric and by the existing rules; no text is rewritten.
+
 - **Court filings no longer carry pleading line numbers or e-filing stamps
   into the text.** RECAP / PACER PDFs on pleading paper came out with the
   1-28 line-number column as number-only lines or glued onto the text line

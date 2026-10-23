@@ -783,15 +783,29 @@ def _extract_document(
             source_uri=source_uri,
         )
 
-    # Phase 2: Filter headers/footers (cross-page repeated content)
+    # Phase 2: Filter headers/footers (cross-page repeated content). Pages
+    # whose text comes from OCR take part with their OCR lines (mapped to
+    # displayed-page points), so a scanned filing loses its CM/ECF band,
+    # running page numbers and repeated headers like a born-digital one.
     furniture: dict[str, int] = {}
-    filter_indices = _filter_headers_footers(
-        all_page_rects,
-        page_numbers=page_indices,
-        page_heights=page_heights,
-        page_rotations=page_rotations,
-        report=furniture,
-    )
+    ocr_skip: list[set[int]] = [set() for _ in all_page_rects]
+    if any(r is not None for r in all_page_ocr):
+        filter_indices, ocr_skip = _filter_furniture_with_ocr(
+            all_page_rects,
+            all_page_ocr,
+            page_numbers=page_indices,
+            page_heights=page_heights,
+            page_rotations=page_rotations,
+            report=furniture,
+        )
+    else:
+        filter_indices = _filter_headers_footers(
+            all_page_rects,
+            page_numbers=page_indices,
+            page_heights=page_heights,
+            page_rotations=page_rotations,
+            report=furniture,
+        )
     # Debug record of what page furniture was removed (non-zero counts only,
     # so documents without any keep their previous metadata).
     removed_report = {k: v for k, v in furniture.items() if v}
@@ -906,6 +920,7 @@ def _extract_document(
                 page_idx=page_idx,
                 ocr_result=page_ocr,
                 min_confidence=ocr_min_confidence,
+                skip=ocr_skip[i],
             )
             flat_idx += len(all_page_rects[i])
             continue
@@ -3879,6 +3894,10 @@ def _run_ocr_per_page(
         )
         try:
             results[i] = engine.extract_sync(image)
+            # Displayed page size in pixels, so OCR line boxes can be mapped back
+            # to page points for the furniture filters (_ocr_furniture_rects).
+            results[i].extra.setdefault("image_size", (image.width, image.height))
+            results[i].extra.setdefault("ocr_dpi", ocr_dpi)
         except Exception as exc:
             logger.warning(
                 "OCR engine %s failed on page %d: %s",
@@ -3940,12 +3959,105 @@ def _is_garbled_scan_layer(
     return is_low_quality_layer(page_text, threshold=threshold)
 
 
+def _ocr_furniture_rects(
+    ocr_result: OCRResult,
+) -> tuple[list[tuple[str, tuple[float, float, float, float], None]], list[int], float]:
+    """OCR lines as furniture-filter rects: ``(text, (left, bottom, right, top), None)``
+    in displayed-page points with a bottom-left origin (the native rect
+    convention), the OCR line index of each rect, and the displayed page
+    height in points (0.0 when the rendered size is unknown)."""
+    size = ocr_result.extra.get("image_size")
+    dpi = ocr_result.extra.get("ocr_dpi") or 300
+    if not size:
+        return [], [], 0.0
+    scale = 72.0 / float(dpi)
+    height_pt = float(size[1]) * scale
+    rects: list[tuple[str, tuple[float, float, float, float], None]] = []
+    index: list[int] = []
+    for j, line in enumerate(ocr_result.lines):
+        bb = line.bbox
+        if bb is None or not (line.text or "").strip():
+            continue
+        top, bottom = min(bb.top, bb.bottom), max(bb.top, bb.bottom)
+        rects.append(
+            (
+                line.text,
+                (
+                    bb.left * scale,
+                    height_pt - bottom * scale,
+                    bb.right * scale,
+                    height_pt - top * scale,
+                ),
+                None,
+            )
+        )
+        index.append(j)
+    return rects, index, height_pt
+
+
+def _filter_furniture_with_ocr(
+    all_page_rects: list[
+        list[tuple[str, tuple[float, float, float, float], dict[str, Any] | None]]
+    ],
+    all_page_ocr: list[OCRResult | None],
+    *,
+    page_numbers: list[int],
+    page_heights: list[float],
+    page_rotations: list[int],
+    report: dict[str, int] | None = None,
+) -> tuple[set[int], list[set[int]]]:
+    """Run :func:`_filter_headers_footers` over a document where some pages
+    are OCRed. OCR pages contribute their OCR lines (displayed-page geometry,
+    rotation 0, since the page was rendered as displayed); native pages their
+    native rects. Returns the excluded flat indices into ``all_page_rects``
+    (native pages only) and, per page, the excluded OCR line indices."""
+    mixed: list[list[tuple[str, tuple[float, float, float, float], Any]]] = []
+    heights: list[float] = []
+    rotations: list[int] = []
+    line_index: list[list[int] | None] = []
+    for i, rects in enumerate(all_page_rects):
+        res = all_page_ocr[i] if i < len(all_page_ocr) else None
+        if res is None:
+            mixed.append(list(rects))
+            heights.append(page_heights[i])
+            rotations.append(page_rotations[i])
+            line_index.append(None)
+        else:
+            o_rects, o_index, h_pt = _ocr_furniture_rects(res)
+            mixed.append(list(o_rects))
+            heights.append(h_pt or page_heights[i])
+            rotations.append(0)
+            line_index.append(o_index)
+    excluded = _filter_headers_footers(
+        mixed,
+        page_numbers=page_numbers,
+        page_heights=heights,
+        page_rotations=rotations,
+        report=report,
+    )
+    native: set[int] = set()
+    ocr_skip: list[set[int]] = [set() for _ in all_page_rects]
+    off_mixed = off_native = 0
+    for i, rects in enumerate(all_page_rects):
+        n = len(mixed[i])
+        hits = [k for k in range(n) if off_mixed + k in excluded]
+        idx = line_index[i]
+        if idx is None:
+            native.update(off_native + k for k in hits)
+        else:
+            ocr_skip[i] = {idx[k] for k in hits}
+        off_mixed += n
+        off_native += len(rects)
+    return native, ocr_skip
+
+
 def _emit_ocr_blocks(
     builder: DocumentBuilder,
     *,
     page_idx: int,
     ocr_result: OCRResult,
     min_confidence: float,
+    skip: set[int] | None = None,
 ) -> None:
     """Emit one Paragraph per surviving OCR line with full provenance.
 
@@ -3956,7 +4068,9 @@ def _emit_ocr_blocks(
     dropped as they contribute nothing to downstream NLP.
     """
     extractor = f"kaos-pdf/ocr/{ocr_result.engine_name}"
-    for line in ocr_result.lines:
+    for j, line in enumerate(ocr_result.lines):
+        if skip and j in skip:  # page furniture (see _filter_furniture_with_ocr)
+            continue
         if line.confidence < min_confidence:
             continue
         text = line.text.strip()
