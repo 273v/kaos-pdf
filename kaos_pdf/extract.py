@@ -15,6 +15,7 @@ import itertools
 import math
 import threading
 from collections.abc import Callable, Sequence
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -29,6 +30,7 @@ from kaos_core.logging import get_logger
 
 from kaos_pdf._text_markers import HyphenResolver, clean_line_text, clean_page_text
 from kaos_pdf._text_markers import join_hyphenated_lines as _join_hyphenated_line_rects
+from kaos_pdf._tounicode import multi_letter_maps
 from kaos_pdf.errors import PdfExtractionError
 from kaos_pdf.model import PdfMetadata, PdfOutlineEntry
 from kaos_pdf.quality import DEFAULT_OCR_QUALITY_THRESHOLD, is_low_quality_layer
@@ -65,6 +67,38 @@ logger = get_logger(__name__)
 # All calls must be serialized. See docs/THREAD_SAFETY.md.
 # ---------------------------------------------------------------------------
 _PDFIUM_LOCK = threading.Lock()
+
+
+def _may_be_a_code(cp: int) -> bool:
+    """Whether a reported character could be a font's raw code, not punctuation or a symbol."""
+    return 0x100 <= cp < 0x2000 or 0xE000 <= cp <= 0xF8FF
+
+
+class _LetterSource:
+    """The file behind a document being read, its font tables read once, if a page needs them."""
+
+    def __init__(self, source: Path | str | bytes) -> None:
+        self._source = source
+        self._maps: dict[str, dict[int, str]] | None = None
+
+    def maps(self) -> dict[str, dict[int, str]]:
+        if self._maps is None:
+            try:
+                data = (
+                    self._source
+                    if isinstance(self._source, bytes)
+                    else Path(self._source).read_bytes()
+                )
+                self._maps = multi_letter_maps(data)
+            except (OSError, ValueError) as e:
+                logger.debug("font tables not read: %s", e)
+                self._maps = {}
+        return self._maps
+
+
+_LETTER_SOURCE: ContextVar[_LetterSource | None] = ContextVar(
+    "kaos_pdf_letter_source", default=None
+)
 
 # pypdfium2 page object type constants
 FPDF_PAGEOBJ_TEXT = 1
@@ -348,6 +382,7 @@ def extract_pdf(
 
     with _PDFIUM_LOCK:
         doc = pdfium.PdfDocument(str(path))
+        reading = _LETTER_SOURCE.set(_LetterSource(path))
         try:
             return _extract_document(
                 doc,
@@ -374,6 +409,7 @@ def extract_pdf(
                 strip_line_numbers=strip_line_numbers,
             )
         finally:
+            _LETTER_SOURCE.reset(reading)
             doc.close()
 
 
@@ -440,6 +476,7 @@ def extract_pdf_bytes(
     """Extract a PDF from in-memory bytes."""
     with _PDFIUM_LOCK:
         doc = pdfium.PdfDocument(data)
+        reading = _LETTER_SOURCE.set(_LetterSource(data))
         try:
             return _extract_document(
                 doc,
@@ -447,6 +484,7 @@ def extract_pdf_bytes(
                 **kwargs,
             )
         finally:
+            _LETTER_SOURCE.reset(reading)
             doc.close()
 
 
@@ -506,6 +544,11 @@ def extract_page_text(
             page = doc[page_number]
             tp = page.get_textpage()
             text = tp.get_text_bounded()
+            reading = _LETTER_SOURCE.set(_LetterSource(source))
+            try:
+                text = _with_letters(tp.raw, tp.count_chars(), text)
+            finally:
+                _LETTER_SOURCE.reset(reading)
             tp.close()
             cleaned, dropped = clean_page_text(
                 text, join_hyphenated_lines=join_hyphenated_lines, resolver=hyphen_resolver
@@ -1672,6 +1715,46 @@ def _gutter_margin_extras(
     return garbled
 
 
+def _letters_for(raw_tp: Any, cps: Sequence[int]) -> dict[int, str]:
+    """The letters of each char PDFium reported as a code its font's own table leaves out
+    (see ``_tounicode``), by char index. Empty unless a document is being read and a code
+    outside plain text turns up, which is when the file is read."""
+    source = _LETTER_SOURCE.get()
+    if source is None or not any(_may_be_a_code(cp) for cp in cps):
+        return {}
+    import ctypes
+
+    maps = source.maps()
+    if not maps:
+        return {}
+    wanted = {code for codes in maps.values() for code in codes}
+    out: dict[int, str] = {}
+    name = ctypes.create_string_buffer(256)
+    flags = ctypes.c_int()
+    for i, cp in enumerate(cps):
+        if cp in wanted and pdfium_raw.FPDFText_GetFontInfo(
+            raw_tp, i, name, 256, ctypes.byref(flags)
+        ):
+            word = maps.get(name.value.decode("utf-8", "replace"), {}).get(cp)
+            if word is not None:
+                out[i] = word
+    return out
+
+
+def _with_letters(raw_tp: Any, n_chars: int, text: str) -> str:
+    """A page's whole text with its unmapped codes replaced. The text isn't index-aligned with
+    the chars, so a code is replaced only where every char reporting it means the same."""
+    cps = [pdfium_raw.FPDFText_GetUnicode(raw_tp, i) for i in range(n_chars)]
+    letters = _letters_for(raw_tp, cps)
+    table: dict[int, str | None] = {}
+    for i, word in letters.items():
+        table[cps[i]] = word if table.get(cps[i], word) == word else None
+    for i, cp in enumerate(cps):
+        if cp in table and i not in letters:
+            table[cp] = None
+    return text.translate({code: word for code, word in table.items() if word is not None})
+
+
 def _page_chars(raw_tp: Any, n_chars: int) -> list[str]:
     """Return one string per PDFium char index (``FPDFText_GetUnicode``).
 
@@ -1684,10 +1767,15 @@ def _page_chars(raw_tp: Any, n_chars: int) -> list[str]:
     unpaired surrogate becomes U+FFFD.
     """
     cps = [pdfium_raw.FPDFText_GetUnicode(raw_tp, i) for i in range(n_chars)]
+    letters = _letters_for(raw_tp, cps)
     out: list[str] = []
     i = 0
     while i < n_chars:
         cp = cps[i]
+        if (word := letters.get(i)) is not None:
+            out.append(word)
+            i += 1
+            continue
         if 0xD800 <= cp <= 0xDBFF and i + 1 < n_chars and 0xDC00 <= cps[i + 1] <= 0xDFFF:
             out.append(chr(0x10000 + ((cp - 0xD800) << 10) + (cps[i + 1] - 0xDC00)))
             out.append("")

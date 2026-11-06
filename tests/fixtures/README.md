@@ -5,9 +5,9 @@ Per the monorepo fixture provenance policy
 every fixture in this directory must answer: where did this file come from,
 what is its license, when did we retrieve it, and what is its content hash.
 
-All 18 fixtures tracked here are **public-domain U.S. government work product**
-(17 USC §105) or **non-precedential state court orders** released through public
-filing systems, with one **intentionally malformed PDF** for negative-path
+All 20 fixtures tracked here are **public-domain U.S. government work product**
+(17 USC §105), **non-precedential state court orders** released through public
+filing systems, or **a state's public law or regulatory filing**, with one **intentionally malformed PDF** for negative-path
 testing. None of these files originated from a customer engagement; none are
 privileged. Seven of them (`test1.pdf`–`test6.pdf`, `bad_test1.pdf`) were
 inherited verbatim from the predecessor `kelvin_pdf/tests/resources/` corpus
@@ -26,6 +26,8 @@ working trees.
 
 | File | Source | License | Retrieved | SHA-256 | Notes |
 |---|---|---|---|---|---|
+| `co_session_law_overlap_page.pdf` | Colorado Session Laws 2024, ch. 296 (SB 24-041), first page, from leg.colorado.gov. A state statute as enacted. One page copied out with PDFium. | Public law | 2026-11-06 | `6d1593a61a3e249f957b1eaff98743580c55289e7bb8c0b9b08459dd5cbd77a9` | Each letter run is placed separately with overlapping boxes: a regression fixture for doubled letters. |
+| `ny_ag_ligature_page.pdf` | New York Attorney General, notice of proposed rulemaking under the SAFE for Kids Act, one page, from ag.ny.gov. A public regulatory filing. One page copied out with PDFium. | Public regulatory filing | 2026-11-06 | `eb0f6543b4fc1202ec6766c47b106e6c87019ddca35ff9321d1a75d8324f8784` | Calibri subsets whose `/ToUnicode` omits ligature glyphs. |
 | `bad_test1.pdf` | Hand-crafted negative fixture — valid PDF 1.2 header + linearization dict, payload zeroed out so PDFium reports `Data format error`. Inherited from `kelvin_pdf/tests/resources/bad_test1.pdf` (commit `fb11491`). | hand-crafted, 273V | 2026-03-27 | `5fd2e952d1379c78752744cd6aaba17d46d37713d019f4ef27b40e9f768dbbdb` | Drives error-path tests in `tests/fuzz/test_fuzz.py` and is explicitly excluded from corpus/stress runs. |
 | `casd_court_order.pdf` | U.S. District Court for the Southern District of California — "Judgment in a Criminal Case for Revocations" (AO 245D), scanned and OCR'd via Adobe Acrobat 9.45 Paper Capture Plug-in. PACER-style criminal-revocation order. | public-domain (17 USC §105) | 2026-03-28 | `cac5be3464c6c8bf4bc567a95985996af544d3cd8f659fce488d3c4e5fc2bb7d` | Tests scanned-PDF + OCR-layer path. Producer string: "Adobe Acrobat 9.45 Paper Capture Plug-in; modified using iText 2.1.7 by 1T3XT". |
 | `gpo_report.pdf` | U.S. Department of Agriculture, *Northeastern Loggers' Handbook*, Agriculture Handbook No. 6 (1951), digitized by GPO / National Agricultural Library. Producer "LuraDocument PDF Compressor Server" indicates GPO digitization workflow. | public-domain (17 USC §105) | 2026-03-28 | `89dc74990b3725b3891a6cd11878e5bbb48bce8f3c52e8b9fbe348fbf6e241bd` | 168-page large-corpus fixture (7.6 MB) — used for benchmarking and memory-pressure tests. |
