@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Letter pairs a font's table leaves out now read as letters.** Word's Calibri draws
+  letter pairs such as "ti" and "tt" as one glyph, and files split into several font
+  subsets often give some subsets a `/ToUnicode` CMap with no entry for them. PDFium then
+  reports the character code as if it were a Unicode value (`addicƟve`, `plaƞorms`). The
+  letters now come from a sibling subset of the same typeface in the file, which numbers
+  its glyphs the same way, or, for Calibri, from its known ligature glyphs. A code a font
+  maps itself is never overridden, siblings that disagree are not trusted, and a file the
+  small CMap reader can't read keeps the text PDFium reported. Applies to `parse_pdf`,
+  `parse_pdf_bytes` and `extract_page_text`.
 - **Court filings no longer carry pleading line numbers or e-filing stamps
   into the text.** RECAP / PACER PDFs on pleading paper came out with the
   1-28 line-number column as number-only lines or glued onto the text line
